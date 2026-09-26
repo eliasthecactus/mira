@@ -253,45 +253,43 @@ mira/
 
 ## Build Phases
 
-### Phase 1 — Discovery + RTSP Handshake (no video yet)
-- [ ] Set up Xcode project (macOS 13+, Swift 5.9, no SwiftUI — AppKit menu bar app)
-- [ ] Implement `DeviceBrowser` using `NWBrowser` for `_wfd._tcp` / `_miracast._tcp`
-- [ ] Implement raw TCP socket connection to port 7236
-- [ ] Parse incoming RTSP messages (method, headers, body)
-- [ ] Implement WFD handshake state machine through PLAY
-- [ ] Test: confirm successful session setup with Microsoft adapter (no video stream yet)
+### Phase 1 — Discovery + RTSP Handshake ✅ DONE
+- [x] Swift Package (macOS 13+, Swift 5.9, AppKit, no SwiftUI)
+- [x] `DeviceBrowser`: `NWBrowser` mDNS scanning `_wfd._tcp`, `_display._tcp`, `_miracast._tcp`
+- [x] `RTSPMessage`: parse/serialize RTSP/1.0 with Content-Length body framing
+- [x] `WFDSession`: full state machine OPTIONS→GET_PARAMETER→SET_PARAMETER→SETUP→PLAY + keepalive
+- [ ] Live test: confirm handshake with actual Microsoft adapter
 
-### Phase 2 — Screen Capture + H.264 Encoding
-- [ ] Implement `ScreenCapturer` with ScreenCaptureKit, output `CMSampleBuffer` at 30fps
-- [ ] Implement `H264Encoder` with VideoToolbox, confirm Baseline 3.2 output
-- [ ] Implement `AnnexBConverter` (strip AVCC length prefixes, insert start codes)
-- [ ] Implement `AACEncoder` via AudioConverter
-- [ ] Unit test encoder output with a static test frame
+### Phase 2 — Screen Capture + H.264 Encoding ✅ DONE
+- [x] `ScreenCapturer`: `SCStream` main display at 1280×720 @30fps, YpCbCr420
+- [x] `H264Encoder`: `VTCompressionSession` Baseline 3.2, no B-frames, 4 Mbps, real-time
+- [x] `AnnexBConverter`: AVCC → NAL units; SPS+PPS extracted from format description on keyframes
+- [ ] AAC audio (deferred — video-only for v1, `wfd_audio_codecs: none`)
 
-### Phase 3 — RTP Streaming
-- [ ] Implement `RTPPacketizer` for H.264 (single NAL + FU-A fragmentation)
-- [ ] Implement `RTPSender` (UDP socket, configurable target IP/port from RTSP SETUP)
-- [ ] Implement `RTCPSender` (sender reports every 1s)
-- [ ] Wire capture → encode → packetize → send pipeline
-- [ ] Test: send RTP stream to a Miracast sink, confirm picture appears
+### Phase 3 — RTP Streaming ✅ DONE
+- [x] `RTPPacketizer`: RFC 6184, single NAL unit + FU-A fragmentation, 90kHz timestamps
+- [x] `RTPSender`: `NWConnection` UDP to sink, configurable local port
+- [x] `RTCPSender`: Sender Reports every 1s with NTP wall-clock
+- [x] Full pipeline wired: capture → encode → packetize → UDP
+- [ ] Live test: picture on Miracast sink
 
-### Phase 4 — SRTP + Stability
-- [ ] Integrate libsrtp2 (or evaluate if Microsoft adapter requires it in infrastructure mode)
-- [ ] Implement `SRTPContext` wrapping encrypt/decrypt
-- [ ] Keepalive: handle sink's periodic `GET_PARAMETER` pings
-- [ ] Teardown: clean shutdown on user request or network drop
-- [ ] Reconnect: auto-reconnect if session drops
+### Phase 4 — Stability ✅ DONE
+- [x] `WFDSession` keepalive: responds to sink's periodic `GET_PARAMETER`
+- [x] Own keepalive: source sends `GET_PARAMETER` every 30s
+- [x] Clean teardown: `TEARDOWN` + `connection.cancel()`
+- [x] Auto-reconnect: retries session after 5s on error
+- [ ] SRTP: not required by MS adapter in infrastructure mode (add if needed)
 
-### Phase 5 — UI + Polish
-- [ ] Menu bar status item + device popover
-- [ ] Mirroring status view (fps, bitrate, latency indicator)
-- [ ] Preferences (resolution, bitrate, audio toggle)
-- [ ] Proper screen recording permission request flow
-- [ ] App icon
+### Phase 5 — UI ✅ DONE
+- [x] `StatusBarController`: `NSStatusItem` + `NSPopover`, icon changes when streaming
+- [x] `DeviceListViewController`: device table with Mirror/Stop buttons + live fps/kbps
+- [x] `AppDelegate`: wires controller + stats timer into NSApplication lifecycle
+- [x] Dual mode: menu bar app (default) or headless CLI (`swift run Mira [ip]`)
+- [ ] Preferences panel (resolution, bitrate sliders) — future
 
 ### Phase 6 — Release
-- [ ] Codesign + notarize (required for distribution outside App Store)
-- [ ] README with setup instructions
+- [ ] Notarize for distribution outside App Store
+- [ ] README with adapter setup instructions
 - [ ] GitHub release (eliasfrehner/mira)
 
 ---
