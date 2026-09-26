@@ -1,31 +1,38 @@
+import AppKit
 import Foundation
 
-// Usage:
-//   swift run Mira              — browse mDNS for Miracast devices, mirror to first found
-//   swift run Mira 192.168.1.5  — connect directly to that IP (skip discovery)
+// CLI: swift run Mira [<ip>]   — runs headless (no Dock icon, no menu bar)
+// App: make run                — menu bar app with device picker
+//
+// Environment variable MIRA_HEADLESS=1 forces CLI mode even when built as app.
 
-let directIP: String? = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
+let isHeadless = CommandLine.arguments.count > 1 || ProcessInfo.processInfo.environment["MIRA_HEADLESS"] == "1"
 
-if let ip = directIP {
-    print("[Mira] Direct mode → \(ip)")
+if isHeadless {
+    // ── Headless CLI mode ───────────────────────────────────────────────
+    let directIP: String? = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
+
+    if let ip = directIP {
+        print("[Mira] Direct mode → \(ip)")
+    } else {
+        print("[Mira] Discovery mode — scanning for Miracast receivers")
+        print("[Mira] Tip: if mDNS fails, pass the adapter IP as argument")
+    }
+
+    let controller = MiraController()
+    Task { await controller.run(connectDirectlyTo: directIP) }
+
+    let sig = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    sig.setEventHandler { print("\n[Mira] Stopping..."); controller.stop(); exit(0) }
+    signal(SIGINT, SIG_IGN)
+    sig.resume()
+
+    RunLoop.main.run()
 } else {
-    print("[Mira] Discovery mode — scanning for Miracast receivers on local network")
-    print("[Mira] Tip: if discovery fails, rerun with the adapter's IP as argument")
+    // ── Menu bar app mode ────────────────────────────────────────────────
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)   // no Dock icon
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.run()
 }
-
-let controller = MiraController()
-Task {
-    await controller.run(connectDirectlyTo: directIP)
-}
-
-// Handle Ctrl-C gracefully
-let sigintSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-sigintSrc.setEventHandler {
-    print("\n[Mira] Stopping...")
-    controller.stop()
-    exit(0)
-}
-signal(SIGINT, SIG_IGN)
-sigintSrc.resume()
-
-RunLoop.main.run()
