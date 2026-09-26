@@ -1,0 +1,11 @@
+.DS_Store
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+build/
+.build/
+*.o
+*.a
+*.dylib
+vendor/libsrtp2/build/
