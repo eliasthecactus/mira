@@ -22,7 +22,7 @@ Mac ──UDP RTP───▶ adapter      MPEG-2 TS: H.264 Constrained Baseline
 
 Check the label or the box. Microsoft's own support page says only the 4K model supports "Miracast over Wi-Fi".
 
-## One-time adapter setup (needs a Windows PC or Xbox)
+## One-time adapter setup (needs a Windows PC once)
 
 The adapter has to join your Wi-Fi network first. That can only be done with Microsoft's app.
 
@@ -35,7 +35,7 @@ The adapter has to join your Wi-Fi network first. That can only be done with Mic
    - **5 GHz** network
    - **WPA, WPA2 or WPA3 Personal** (no enterprise/802.1X, no captive portal, no proxy)
    - your Mac on the **same network and subnet**, with no "client isolation" (guest networks usually block device-to-device traffic)
-6. If the app has a PIN/pairing option, set it so **no PIN is required**. Mira doesn't implement PIN entry or encryption yet.
+6. A PIN or pairing option in the app is fine either way. Mira supports PIN pairing (see [Security](#security)), but connecting without one is simpler.
 
 After that the Windows PC isn't needed any more.
 
@@ -74,11 +74,36 @@ mira help                            # all options
 
 | Setting | Default | Notes |
 |---|---|---|
-| Display | main display | menu or `--display <n>` |
-| Resolution | Auto | best of 1080p30 / 720p30 the adapter supports; `--resolution 720p` to force |
-| Bitrate | 6 Mbit/s | lower it if the picture stutters, raise it for sharper text |
+| Mirror / Extend | Mirror | **Extend** makes the TV a second screen instead of a copy (`--extend`), see below |
+| Display | main display | which screen to mirror: menu or `--display <n>` |
+| Resolution | Best | best of 1080p30 / 720p30 the adapter supports; `--resolution 720p` to force |
+| Quality | Auto | adapts the bitrate to your Wi-Fi (backs off on packet loss or congestion, up to 12 Mbit/s); pick a number to fix it (`--bitrate 6`, `--max-bitrate 16`) |
 | Audio | on | AAC if the adapter supports it, else LPCM; `--audio-codec lpcm` to force |
+| Sound only on TV | on | mutes the Mac's speakers while mirroring so you don't hear everything twice; restored afterwards, even after a crash (`--keep-mac-audio` to turn off) |
+| Security | Auto | see [Security](#security) (`--security`, `--pin`) |
+| Reconnect on launch | off | reconnect to the last display when Mira starts |
 | Latency buffer | 200 ms (AAC), 150 ms (LPCM), 120 ms (no audio) | `--delay <ms>`; raise it if audio crackles |
+
+**Keyboard shortcut:** ⌃⌥⌘M starts mirroring to the last display, or stops it. While mirroring, the Mac doesn't go to sleep.
+
+### Extend: the TV as a second screen
+
+In Extend mode Mira creates a virtual monitor the size of the stream, so macOS treats the TV as another screen: drag windows onto it, use it for presenter view. Arrange it in System Settings → Displays like any monitor.
+
+macOS has no public API for virtual monitors. Mira uses the private CoreGraphics one that display utilities such as BetterDisplay and DeskPad use. Mira checks that the virtual display really switched on. If it didn't, Mira mirrors instead and says so (`Mira doctor` tells you up front). On the macOS 27 build used for development it doesn't switch on, so Extend mode has only been exercised up to that fallback.
+
+### Security
+
+[MS-MICE] lets the *sender* choose how a session is protected. A display that follows the spec must accept a plain connection, so that's what Mira tries first:
+
+| Setting | What happens |
+|---|---|
+| **Auto** (default) | plain connection; if the display doesn't answer within 10 s, Mira retries with PIN pairing and asks for the PIN shown on the TV |
+| Off | plain connection only |
+| Encrypted | DTLS 1.2 handshake over the MICE channel, then every RTP packet is encrypted |
+| PIN | as Encrypted, plus the TV shows a PIN that you type on the Mac (dialog, or `--pin 12345678` in the CLI) |
+
+The message flow, the PIN hash (checked against the spec's test vectors) and DTLS follow the spec exactly. The spec doesn't say *how* data is protected with the DTLS key. Mira sends each protected message and RTP packet as a DTLS application-data record, which is what a DTLS stack produces when asked to encrypt. This works against the bundled mock display (OpenSSL) but is an educated guess for real hardware. The log shows every handshake step, so the first test with a real adapter will confirm it.
 
 ## Build from source
 
@@ -126,10 +151,12 @@ The TV should show colour bars with a moving white line and a running frame coun
 |---|---|---|
 | `list` finds nothing | Local Network permission off, adapter not on Wi-Fi, different subnet, or mDNS filtered | Check System Settings → Privacy & Security → Local Network. Re-check the setup steps. `dns-sd -B _display._tcp`. Connect by IP (find it in your router's DHCP list) |
 | `Could not reach … :7250 … Connection refused` | not a 4K adapter, or infrastructure mode off | Check the model and firmware |
-| `Sink did not connect back to the RTSP port within 15s` | **macOS firewall**, or the adapter rejected SOURCE_READY (PIN required?) | `Mira doctor`. Turn the firewall off briefly to test. Disable the PIN in the adapter app |
+| `Sink did not connect back to the RTSP port within 15s` | **macOS firewall**, or the adapter wants PIN pairing | `Mira doctor`. Turn the firewall off briefly to test. Try `--security pin` |
+| `The display rejected the PIN` | typo, or the PIN changed | Reconnect and type the PIN currently on the TV |
+| `DTLS handshake … failed` | the adapter's DTLS doesn't match Mira's | Send the log; use `--security off` meanwhile |
 | `Sink rejected M4 …` | the chosen format was refused | `--resolution 720p`, then `--no-audio` |
 | Handshake OK but black screen | the media stream isn't accepted | `--no-audio`, `--resolution 720p`, `--bitrate 4`. Check `--dump-ts out.ts` plays in `ffplay` |
-| Picture stutters or freezes | Wi-Fi throughput or jitter | `--bitrate 4`, `--delay 300`, move closer to the router |
+| Picture stutters or freezes | Wi-Fi throughput or jitter | Auto quality should back off by itself (look for `[Bitrate]` lines); otherwise `--bitrate 4`, `--delay 300`, move closer to the router |
 | Audio crackles or drops | audio arrives too late | `--delay 300`. Try `--audio-codec lpcm` |
 | Handshake OK, no sound | adapter dislikes AAC | `--audio-codec lpcm` |
 
@@ -155,7 +182,13 @@ MIRA_ARGS="" tools/e2e.sh                              # same, capturing the rea
 python3 tools/mock_sink.py --play                      # interactive: watch the stream in ffplay
 .build/debug/Mira connect 127.0.0.1                    # …in a second terminal
 python3 tools/mock_sink.py --advertise "Fake TV"       # appears in `Mira list` and the menu bar app
+python3 tools/mock_sink.py --loss 10                   # drop 10 % of packets, report it via RTCP → watch Mira back off
 python3 tools/mock_sink.py --help                      # --no-audio, --no-m2, --video-formats, --idr-at, …
+
+# Security modes need pyOpenSSL (a DTLS server):
+python3 -m venv .venv && .venv/bin/pip install pyopenssl cryptography
+.venv/bin/python tools/mock_sink.py --security pin --pin 12345678   # ignores plain connections, shows a PIN
+MIRA_ARGS="--test-pattern --security pin --pin 12345678" tools/e2e.sh --security pin --pin 12345678
 ```
 
 The mock sink is written from the same specs as Mira, so it can't catch a shared misreading of them. ffmpeg's independent decode check and the real adapter cover that.
@@ -165,13 +198,16 @@ The mock sink is written from the same specs as Mira, so it can't catch a shared
 | Layer | File | Notes |
 |---|---|---|
 | Discovery | `Discovery/DeviceBrowser.swift` | DNS-SD `_display._tcp` with TXT `container_id`, resolved per interface (works with a VPN connected) |
-| MICE | `Session/MICEMessage.swift`, `MICEClient.swift` | SOURCE_READY / STOP_PROJECTION; friendly name is UTF-16LE with BOM, as Windows and GNOME send it |
+| MICE | `Session/MICEMessage.swift`, `MICEClient.swift` | SOURCE_READY / STOP_PROJECTION, SESSION_REQUEST / PIN challenge; friendly name is UTF-16LE with BOM, as Windows and GNOME send it |
+| Security | `Session/DTLSTunnel.swift` | Network.framework DTLS 1.2 client behind a loopback relay, so its records can travel inside MICE messages and RTP |
 | RTSP/WFD | `Session/WFDSession.swift`, `WFDNegotiation.swift` | Mac is the RTSP server; M1–M8, M16 keep-alive every 25 s, IDR requests, PAUSE/PLAY |
 | Capture | `Capture/ScreenCapturer.swift` | ScreenCaptureKit video + system audio, letterboxed to 16:9 |
 | Video | `Encoder/H264Encoder.swift`, `H264Bitstream.swift` | VideoToolbox H.264 Baseline (CBP-flagged), no B-frames, IDR every 2 s or on request, AUD + SPS/PPS per keyframe |
 | Audio | `Encoder/AACEncoder.swift`, `LPCMEncoder.swift` | AAC-LC 48 kHz stereo 128 kbit/s (ADTS), or WFD LPCM 16-bit big-endian |
 | Mux | `Mux/MPEGTSMuxer.swift` | WFD PIDs (PMT 0x100, video 0x1011, audio 0x1100), PCR on video, PAT/PMT every 100 ms |
 | Transport | `RTP/RTPMP2TPacketizer.swift`, `RTPSender.swift` | RTP payload type 33, 7 TS packets per datagram |
+| Quality | `RTP/BitrateController.swift`, `RTCPSender.swift` | AIMD bitrate from RTCP receiver reports, send backlog and repeated keyframe requests |
+| System | `Util/SystemIntegration.swift`, `CVirtualDisplay/` | sleep prevention, speaker mute, virtual display, global shortcut |
 | Timing | `MediaPipeline.swift` | constant-rate frame pump (re-sends the last frame on a static screen), PTS = capture + buffer, PCR backstop on audio |
 
 References: [MS-MICE], Wi-Fi Display Technical Specification, Android's open-source Wi-Fi Display source (LPCM layout), ISO/IEC 13818-1 (MPEG-TS), RFC 2250 (MPEG-TS over RTP), and [GNOME Network Displays], an open-source MICE source that was invaluable for byte-level details.
@@ -188,9 +224,8 @@ References: [MS-MICE], Wi-Fi Display Technical Specification, Android's open-sou
 
 ## Not implemented (yet)
 
-- Stream encryption (MICE DTLS / HDCP) and PIN pairing. Most adapters don't require them for infrastructure mode.
+- HDCP (only needed for DRM-protected video, which macOS won't screen-capture anyway)
 - UIBC (sending touch/keyboard input back from the TV)
-- Extending the desktop to the TV as a second display (needs a virtual display driver)
 - Notarized builds out of the box. Supported by the release workflow once Developer ID secrets are added.
 
 [MS-MICE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mice/940d808c-97f8-418e-a8a9-c471dc0d21bb

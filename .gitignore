@@ -10,3 +10,4 @@ build/
 *.dylib
 vendor/libsrtp2/build/
 dist/
+.venv/

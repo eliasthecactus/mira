@@ -75,6 +75,11 @@ Byte-level details, PIDs and timing are documented in the source files and the R
 - [x] GitHub Actions: CI (build, tests, 3× e2e, package) and tag-triggered releases with optional Developer ID signing + notarization
 - [x] MIT license, CHANGELOG, hardware-report issue template, `make release`
 
+### Phase 6b: Beta 2 ✅
+- [x] MS-MICE security: SESSION_REQUEST, DTLS 1.2 handshake in SECURITY_HANDSHAKE, PIN challenge/response, encrypted TLVArrays + RTP; auto fallback to PIN
+- [x] Adaptive bitrate (RTCP RR, send backlog, repeated IDR requests)
+- [x] Extend mode via virtual display (with fallback), sleep prevention, speaker mute, reconnect on launch, ⌃⌥⌘M
+
 ### Phase 7: Hardware validation ⏳ ← next
 - [ ] Join the 4K adapter to Wi-Fi (Windows app) and run the README test-day checklist
 - [ ] Fix whatever the real adapter disagrees with (send `mira.log`)
@@ -82,10 +87,8 @@ Byte-level details, PIDs and timing are documented in the source files and the R
 - [ ] Developer ID certificate → notarized releases (add the repository secrets)
 
 ### Later / maybe
-- [ ] MICE DTLS stream encryption + PIN pairing (only if adapters require it)
-- [ ] Extended desktop via virtual display
+- [ ] Confirm the DTLS record format for encrypted TLVs/RTP against a real sink
 - [ ] UIBC input back-channel
-- [ ] Adaptive bitrate from RTCP receiver reports
 
 ## Constraints & decisions
 

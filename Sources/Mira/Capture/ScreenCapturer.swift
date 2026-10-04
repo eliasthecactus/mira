@@ -27,6 +27,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         var fps: Int = 30
         var captureAudio = true
         var displayID: CGDirectDisplayID? = nil   // nil = main display
+        var requireDisplay = false                 // fail instead of falling back (virtual display)
     }
 
     var onAudio: ((_ interleaved: [Float], _ pts: Double) -> Void)?
@@ -44,14 +45,26 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
     }
 
     func start() async throws {
-        let content: SCShareableContent
+        var content: SCShareableContent
         do {
             content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         } catch {
             throw CaptureError.permissionDenied(error)
         }
         let wanted = config.displayID ?? CGMainDisplayID()
-        guard let display = content.displays.first(where: { $0.displayID == wanted }) ?? content.displays.first else {
+        // A display that was just created (extend mode) can take a moment to show up.
+        var attempts = 0
+        while !content.displays.contains(where: { $0.displayID == wanted }), config.displayID != nil, attempts < 15 {
+            attempts += 1
+            try await Task.sleep(nanoseconds: 200_000_000)
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        }
+        let exact = content.displays.first(where: { $0.displayID == wanted })
+        if exact == nil, config.requireDisplay { throw CaptureError.noDisplayFound }
+        if exact == nil, config.displayID != nil {
+            Log.warn("Capture", "Display \(wanted) is gone; mirroring the main display instead")
+        }
+        guard let display = exact ?? content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
             throw CaptureError.noDisplayFound
         }
 

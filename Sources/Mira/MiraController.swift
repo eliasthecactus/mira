@@ -8,11 +8,15 @@ struct MiraStats {
     var resolution: String = ""
     var fps: Double = 0
     var kbps: Int = 0
+    var targetKbps: Int = 0
+    var encrypted = false
+    var extended = false
+    var extendFailure: String? = nil
 }
 
 // Orchestrates one projection:
 //   1. listen for RTSP on 7236          (WFDSession)
-//   2. SOURCE_READY → sink:7250          (MICEClient)
+//   2. [security handshake / PIN] then SOURCE_READY → sink:7250   (MICEClient)
 //   3. sink connects in, M1…M7           (WFDSession)
 //   4. stream MPEG-TS/RTP                (MediaPipeline)
 final class MiraController: @unchecked Sendable {   // state is confined to `queue`
@@ -29,6 +33,25 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         var ptsDelay: Double? = nil
         var friendlyName: String = Host.current().localizedName ?? "Mac"
         var autoReconnect = true
+        var security: SecurityChoice = .auto
+        var pin: String? = nil                       // preset PIN (CLI --pin); otherwise asked for
+        var adaptiveBitrate = true
+        var extendDisplay = false
+        var muteMac = true
+    }
+
+    // auto = plain session (any compliant sink accepts it); if the display ignores it,
+    // retry once with PIN pairing, since that's the only reason a sink should refuse.
+    enum SecurityChoice: String, CaseIterable {
+        case auto, off, encrypted, pin
+
+        var initial: MICESecurity {
+            switch self {
+            case .auto, .off: return .none
+            case .encrypted: return .encrypted
+            case .pin: return .pin
+            }
+        }
     }
 
     enum Status: Equatable {
@@ -40,6 +63,8 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
 
     var onDevicesChanged: (([MiracastDevice]) -> Void)?
     var onStatusChanged: ((Status) -> Void)?
+    // Asks the user for the PIN shown on the TV (called on an arbitrary queue).
+    var pinProvider: ((@escaping (String?) -> Void) -> Void)?
 
     var options: Options
     private(set) var status: Status = .idle { didSet { if status != oldValue { onStatusChanged?(status) } } }
@@ -54,6 +79,10 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private var userStopped = false
     private var reconnectAttempts = 0
     private var generation = 0
+    private var currentSecurity: MICESecurity = .none
+    private var extended: ExtendedDisplay?
+    private var extendFailure: String?
+    private static var extendUnavailable: String?      // remembered for the rest of the run
 
     // Stats rate tracking
     private var lastStatsTime = Date()
@@ -106,7 +135,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             self.tearDownCurrent(reason: "switching device")
             self.userStopped = false
             self.reconnectAttempts = 0
-            self.start(device)
+            self.start(device, security: self.options.security.initial)
         }
     }
 
@@ -133,7 +162,9 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             let fps = Double(s.framesEncoded &- lastFrames) / dt
             let kbps = Int(Double(s.bytesSent &- lastBytes) * 8 / dt / 1000)
             lastStatsTime = now; lastFrames = s.framesEncoded; lastBytes = s.bytesSent
-            return MiraStats(isStreaming: true, device: device, resolution: res, fps: fps, kbps: kbps)
+            return MiraStats(isStreaming: true, device: device, resolution: res, fps: fps, kbps: kbps,
+                             targetKbps: s.bitrate / 1000, encrypted: s.encrypted,
+                             extended: s.extended, extendFailure: extendFailure)
         }
     }
 
@@ -147,13 +178,48 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
 
     // MARK: - Internals (queue only)
 
-    private func start(_ device: MiracastDevice) {
+    private func start(_ device: MiracastDevice, security: MICESecurity) {
         generation += 1
         let gen = generation
         activeDevice = device
+        currentSecurity = security
         status = .connecting(device)
-        Log.info("Mira", "Connecting to \(device) as \"\(options.friendlyName)\"")
+        Log.info("Mira", "Connecting to \(device) as \"\(options.friendlyName)\" (security: \(security.rawValue))")
 
+        // Extend mode: create the virtual monitor before contacting the display, so the
+        // stream can start the moment the display says PLAY.
+        if options.extendDisplay && !options.testPattern && extended == nil {
+            if let reason = Self.extendUnavailable {
+                extendFailure = reason
+            } else {
+                let size = options.prefs.resolution == .p720 ? (1280, 720) : (1920, 1080)
+                Task { @MainActor in
+                    var created: ExtendedDisplay?
+                    var failure: String?
+                    do {
+                        created = try await ExtendedDisplay.create(name: "Mira (\(device.name))", width: size.0,
+                                                                   height: size.1, fps: self.options.prefs.fps)
+                    } catch {
+                        failure = error.localizedDescription
+                    }
+                    self.queue.async {
+                        guard gen == self.generation else { return }
+                        self.extended = created
+                        if let failure {
+                            Self.extendUnavailable = failure
+                            self.extendFailure = failure
+                            Log.warn("Mira", "\(failure) Mirroring instead.")
+                        }
+                        self.startSession(device, security: security, gen: gen)
+                    }
+                }
+                return
+            }
+        }
+        startSession(device, security: security, gen: gen)
+    }
+
+    private func startSession(_ device: MiracastDevice, security: MICESecurity, gen: Int) {
         let s = WFDSession(rtspPort: options.rtspPort, serverRTPPort: options.localRTPPort,
                            prefs: options.prefs, queue: queue)
         session = s
@@ -162,7 +228,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             guard let self, gen == self.generation else { return }
             self.startPipeline(device: device, format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort, gen: gen)
         }
-        s.onIDRRequest = { [weak self] in self?.pipeline?.forceKeyframe() }
+        s.onIDRRequest = { [weak self] in self?.pipeline?.sinkRequestedKeyframe() }
         s.onPause = { [weak self] in self?.pipeline?.setPaused(true) }
         s.onResume = { [weak self] in self?.pipeline?.setPaused(false) }
         s.onClosed = { [weak self] error in
@@ -173,10 +239,18 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         s.listen { [weak self] in
             guard let self, gen == self.generation else { return }
             let m = MICEClient(host: device.ipAddress, port: device.port, friendlyName: self.options.friendlyName,
-                               sourceID: Self.sourceID, queue: self.queue)
-            m.onConnected = { [weak m, weak self] in
-                guard let self else { return }
-                m?.sendSourceReady(rtspPort: self.options.rtspPort)
+                               sourceID: Self.sourceID, security: security, queue: self.queue)
+            m.onSourceReady = { [weak self] in
+                guard let self, gen == self.generation else { return }
+                // auto: a short wait for the plain attempt, since a PIN retry follows.
+                let wait: TimeInterval = security != .none ? 20 : (self.options.security == .auto ? 10 : 15)
+                self.session?.armConnectTimeout(wait)
+            }
+            m.pinProvider = { [weak self] completion in
+                guard let self else { completion(nil); return }
+                if let preset = self.options.pin { completion(preset); return }
+                guard let provider = self.pinProvider else { completion(nil); return }
+                provider(completion)
             }
             m.onStopProjection = { [weak self] in
                 guard let self, gen == self.generation else { return }
@@ -185,10 +259,13 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             }
             m.onError = { [weak self] err in
                 guard let self, gen == self.generation else { return }
-                self.sessionEnded(device: device, error: MiraError.miceFailed(device, err))
+                // Security failures speak for themselves; anything else is "couldn't reach it".
+                let wrapped: Error = (err is MICEClient.MICEError || err is DTLSTunnel.TunnelError)
+                    ? err : MiraError.miceFailed(device, err)
+                self.sessionEnded(device: device, error: wrapped)
             }
             self.mice = m
-            m.connect()
+            m.connect(rtspPort: self.options.rtspPort)
         }
     }
 
@@ -199,7 +276,11 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
                                        fps: format.resolution.fps, testPattern: options.testPattern,
                                        displayID: options.displayID,
                                        dumpTS: options.dumpTS,
-                                       ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio))
+                                       ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio),
+                                       adaptiveBitrate: options.adaptiveBitrate,
+                                       extendedDisplayID: extended?.displayID,
+                                       muteMac: options.muteMac,
+                                       tunnel: currentSecurity == .none ? nil : mice?.tunnel)
         let p = MediaPipeline(config: cfg)
         p.onFatalError = { [weak self] err in
             guard let self else { return }
@@ -237,6 +318,19 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         }
         Log.error("Mira", error.localizedDescription)
 
+        // auto security: a compliant sink always answers a plain SOURCE_READY, so being
+        // ignored suggests it insists on PIN pairing. Try that once.
+        if case WFDSession.SessionError.sinkNeverConnected = error,
+           options.security == .auto, currentSecurity == .none, !userStopped {
+            Log.info("Mira", "The display didn't answer a plain connection; retrying with PIN pairing")
+            let gen = generation
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self, gen == self.generation, !self.userStopped else { return }
+                self.start(device, security: .pin)
+            }
+            return
+        }
+
         // Only retry sessions that were working; a failure during setup would just repeat.
         if wasStreaming, options.autoReconnect, !userStopped, reconnectAttempts < 3 {
             reconnectAttempts += 1
@@ -245,7 +339,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             let gen = generation
             queue.asyncAfter(deadline: .now() + 3) { [weak self] in
                 guard let self, gen == self.generation, !self.userStopped else { return }
-                self.start(device)
+                self.start(device, security: self.currentSecurity)
             }
         } else {
             status = .failed(error.localizedDescription)
@@ -260,6 +354,11 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         mice?.onError = nil
         mice?.stop(); mice = nil
         activeDevice = nil
+        extendFailure = nil
+        if let ext = extended {
+            extended = nil
+            DispatchQueue.main.async { _ = ext }   // the virtual display lives on the main queue
+        }
     }
 }
 

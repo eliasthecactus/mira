@@ -111,6 +111,14 @@ final class H264Encoder {
         Log.info("Encoder", String(format: "Warm-up frame took %.0f ms", Date().timeIntervalSince(start) * 1000))
     }
 
+    // Changes the target bitrate of the running session (used by adaptive bitrate).
+    func setBitrate(_ bps: Int) {
+        guard let session else { return }
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bps as CFNumber)
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits,
+                             value: [bps * 3 / 16, 1] as CFArray)
+    }
+
     func forceKeyframe() {
         forceKeyLock.withLock { forceNextKeyframe = true }
     }

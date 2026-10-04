@@ -90,8 +90,22 @@ final class WFDSession {
 
     // MARK: - Lifecycle
 
+    // Starts the "sink must connect back within N seconds" timer. Call it when
+    // SOURCE_READY goes out — a PIN prompt before that can take as long as the user needs.
+    func armConnectTimeout(_ seconds: TimeInterval = 15) {
+        queue.async { [self] in
+            connectTimeout?.cancel()
+            let t = DispatchWorkItem { [weak self] in
+                guard let self, self.connection == nil, self.state == .listening else { return }
+                self.close(error: SessionError.sinkNeverConnected(seconds))
+            }
+            connectTimeout = t
+            queue.asyncAfter(deadline: .now() + seconds, execute: t)
+        }
+    }
+
     // Starts listening. `ready` fires once the port is bound (before SOURCE_READY is sent).
-    func listen(connectTimeout seconds: TimeInterval = 15, ready: @escaping () -> Void) {
+    func listen(ready: @escaping () -> Void) {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
@@ -105,12 +119,6 @@ final class WFDSession {
                 case .ready:
                     Log.info("RTSP", "Listening on TCP \(self.rtspPort)")
                     self.state = .listening
-                    let t = DispatchWorkItem { [weak self] in
-                        guard let self, self.connection == nil, self.state == .listening else { return }
-                        self.close(error: SessionError.sinkNeverConnected(seconds))
-                    }
-                    self.connectTimeout = t
-                    self.queue.asyncAfter(deadline: .now() + seconds, execute: t)
                     ready()
                 case .failed(let err):
                     Log.error("RTSP", "Listener failed: \(err)")

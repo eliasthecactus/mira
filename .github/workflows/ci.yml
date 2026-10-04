@@ -23,8 +23,10 @@ jobs:
       - name: Unit tests
         run: swift test
 
-      - name: Install ffmpeg (decode check in e2e)
-        run: brew install --quiet ffmpeg
+      - name: Install ffmpeg (decode check) and pyOpenSSL (mock DTLS sink)
+        run: |
+          brew install --quiet ffmpeg
+          python3 -m venv .venv && .venv/bin/pip install --quiet pyopenssl cryptography
 
       # GitHub's macOS VMs have no hardware video encoder; software-encoding 1080p on
       # 3 vCPUs occasionally stalls the process, so timing checks get 150 ms of slack
@@ -36,6 +38,13 @@ jobs:
           E2E_OUT="$RUNNER_TEMP/e2e-lpcm" E2E_DURATION=5 tools/e2e.sh $T --audio lpcm
           E2E_OUT="$RUNNER_TEMP/e2e-720"  E2E_DURATION=5 tools/e2e.sh $T --no-audio --no-m2 \
             "--video-formats=00 00 01 02 000000a1 00000000 00000000 00 0000 0000 00 none none"
+          MIRA_ARGS="--test-pattern --security encrypted" E2E_OUT="$RUNNER_TEMP/e2e-enc" E2E_DURATION=5 \
+            tools/e2e.sh $T --security encrypted
+          # auto security: plain attempt is ignored, Mira falls back to PIN pairing
+          MIRA_ARGS="--test-pattern --pin 24680135" E2E_OUT="$RUNNER_TEMP/e2e-pin" E2E_DURATION=5 \
+            tools/e2e.sh $T --security pin --pin 24680135
+          E2E_EXPECT_LOG="Bitrate.*packet loss" E2E_SKIP_DECODE=1 E2E_OUT="$RUNNER_TEMP/e2e-loss" E2E_DURATION=8 \
+            tools/e2e.sh $T --loss 12
 
       - name: Package (ad-hoc signed)
         run: scripts/package.sh

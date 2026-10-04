@@ -13,10 +13,13 @@ mkdir -p "$OUT"
 DURATION="${E2E_DURATION:-8}"
 MIRA=.build/debug/Mira
 MIRA_ARGS="${MIRA_ARGS---test-pattern}"   # e.g. MIRA_ARGS="" to capture the real screen
+PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python    # security tests need pyOpenSSL
+# E2E_EXPECT_LOG="regex"   fail unless Mira's log matches (e.g. a bitrate change)
+# E2E_SKIP_DECODE=1        skip the ffmpeg decode check (lossy runs)
 
 swift build >/dev/null || { echo "build failed"; exit 1; }
 
-python3 tools/mock_sink.py --bind 127.0.0.1 --duration "$DURATION" --idr-at 3 --timeout $((DURATION + 25)) \
+$PY tools/mock_sink.py --bind 127.0.0.1 --duration "$DURATION" --idr-at 3 --timeout $((DURATION + 25)) \
     --out "$OUT/received.ts" "$@" > "$OUT/sink.log" 2>&1 &
 SINK=$!
 sleep 1
@@ -34,7 +37,11 @@ echo "── mock sink ───────────────────
 echo "── Mira ──────────────────────────────────"; cat "$OUT/mira.log"
 
 STATUS=$SINK_STATUS
-if [ -s "$OUT/received.ts" ] && command -v ffprobe >/dev/null; then
+if [ -n "${E2E_EXPECT_LOG:-}" ]; then
+    if grep -qE "$E2E_EXPECT_LOG" "$OUT/mira.log"; then echo "found expected log line: $E2E_EXPECT_LOG"
+    else echo "FAIL: Mira's log has no line matching: $E2E_EXPECT_LOG"; STATUS=1; fi
+fi
+if [ -z "${E2E_SKIP_DECODE:-}" ] && [ -s "$OUT/received.ts" ] && command -v ffprobe >/dev/null; then
     echo "── ffprobe ───────────────────────────────"
     ffprobe -v error -show_entries stream=codec_name,profile,level,width,height,r_frame_rate,sample_rate,channels \
         -of compact "$OUT/received.ts"

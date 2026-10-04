@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // [MS-MICE] Miracast over Infrastructure Connection Establishment messages.
 //
@@ -51,6 +52,62 @@ struct MICEMessage: Equatable {
             TLV(type: TLVType.rtspPort.rawValue, value: Data([UInt8(rtspPort >> 8), UInt8(rtspPort & 0xFF)])),
             TLV(type: TLVType.sourceID.rawValue, value: normalizedSourceID(sourceID)),
         ])
+    }
+
+    // Security options bits (TLV 0x05): A = UseDtlsStreamEncryption, B = SinkDisplaysPin.
+    struct SecurityOptions: OptionSet {
+        let rawValue: UInt8
+        static let streamEncryption = SecurityOptions(rawValue: 0x01)
+        static let sinkDisplaysPin  = SecurityOptions(rawValue: 0x02)
+    }
+
+    enum PINResponseReason: UInt8 {
+        case accepted = 0x00, wrongPIN = 0x01, invalidMessage = 0x02
+    }
+
+    static func sessionRequest(friendlyName: String, sourceID: Data, options: SecurityOptions) -> MICEMessage {
+        MICEMessage(command: Command.sessionRequest.rawValue, tlvs: [
+            TLV(type: TLVType.friendlyName.rawValue, value: encodeFriendlyName(friendlyName)),
+            TLV(type: TLVType.sourceID.rawValue, value: normalizedSourceID(sourceID)),
+            TLV(type: TLVType.securityOptions.rawValue, value: Data([options.rawValue])),
+        ])
+    }
+
+    static func securityHandshake(token: Data, sourceID: Data) -> MICEMessage {
+        MICEMessage(command: Command.securityHandshake.rawValue, tlvs: [
+            TLV(type: TLVType.securityToken.rawValue, value: token),
+            TLV(type: TLVType.sourceID.rawValue, value: normalizedSourceID(sourceID)),
+        ])
+    }
+
+    // TLV order as in the spec's example (section 4.6): hash first, then source ID.
+    static func pinChallenge(pinHash: Data, sourceID: Data) -> MICEMessage {
+        MICEMessage(command: Command.pinChallenge.rawValue, tlvs: [
+            TLV(type: TLVType.pinChallenge.rawValue, value: pinHash),
+            TLV(type: TLVType.sourceID.rawValue, value: normalizedSourceID(sourceID)),
+        ])
+    }
+
+    // [MS-MICE] 3.1.5.6.1: SHA-256(ASCII PIN ‖ binary IP address of the sender).
+    static func pinHash(pin: String, senderIP: String) -> Data? {
+        var addr4 = in_addr(), addr6 = in6_addr()
+        var ipBytes: Data
+        if inet_pton(AF_INET, senderIP, &addr4) == 1 {
+            ipBytes = withUnsafeBytes(of: &addr4) { Data($0) }
+        } else if inet_pton(AF_INET6, senderIP, &addr6) == 1 {
+            ipBytes = withUnsafeBytes(of: &addr6) { Data($0) }
+        } else {
+            return nil
+        }
+        var input = Data(pin.utf8)
+        input.append(ipBytes)
+        return Data(SHA256.hash(data: input))
+    }
+
+    var securityToken: Data? { value(.securityToken) }
+
+    var pinResponseReason: PINResponseReason? {
+        value(.pinResponseReason).flatMap { $0.first }.flatMap(PINResponseReason.init(rawValue:))
     }
 
     static func stopProjection(friendlyName: String, sourceID: Data) -> MICEMessage {
@@ -127,13 +184,44 @@ struct MICEMessage: Equatable {
 
     // MARK: - Wire format
 
-    func serialize() -> Data {
+    // The TLVArray on its own — what gets encrypted once a PIN session is set up.
+    var tlvBytes: Data {
         var body = Data()
         for tlv in tlvs {
             body.append(tlv.type)
             body.appendBE(UInt16(tlv.value.count))
             body.append(tlv.value)
         }
+        return body
+    }
+
+    // Header + an opaque (encrypted) TLVArray.
+    static func serialize(command: UInt8, body: Data) -> Data {
+        var out = Data()
+        out.appendBE(UInt16(headerSize + body.count))
+        out.append(protocolVersion)
+        out.append(command)
+        out.append(body)
+        return out
+    }
+
+    // Parses a decrypted TLVArray into TLVs.
+    static func parseTLVs(_ body: Data) throws -> [TLV] {
+        let bytes = [UInt8](body)
+        var tlvs: [TLV] = []
+        var i = 0
+        while i < bytes.count {
+            guard i + 3 <= bytes.count else { throw ParseError.truncatedTLV }
+            let len = Int(bytes[i + 1]) << 8 | Int(bytes[i + 2])
+            guard i + 3 + len <= bytes.count else { throw ParseError.truncatedTLV }
+            tlvs.append(TLV(type: bytes[i], value: Data(bytes[(i + 3)..<(i + 3 + len)])))
+            i += 3 + len
+        }
+        return tlvs
+    }
+
+    func serialize() -> Data {
+        let body = tlvBytes
         var out = Data()
         out.appendBE(UInt16(Self.headerSize + body.count))
         out.append(version)
@@ -143,6 +231,23 @@ struct MICEMessage: Equatable {
     }
 
     enum ParseError: Error { case badSize(Int), truncatedTLV }
+
+    // A whole message whose TLVArray has not been interpreted yet (it may be encrypted).
+    struct Frame {
+        let version: UInt8
+        let command: UInt8
+        let body: Data
+    }
+
+    static func extractFrame(from buffer: inout Data) throws -> Frame? {
+        let bytes = [UInt8](buffer)
+        guard bytes.count >= headerSize else { return nil }
+        let size = Int(bytes[0]) << 8 | Int(bytes[1])
+        guard size >= headerSize else { throw ParseError.badSize(size) }
+        guard bytes.count >= size else { return nil }
+        buffer = Data(bytes[size...])
+        return Frame(version: bytes[2], command: bytes[3], body: Data(bytes[headerSize..<size]))
+    }
 
     // Removes one complete message from the front of `buffer`.
     // Returns nil when more bytes are needed.

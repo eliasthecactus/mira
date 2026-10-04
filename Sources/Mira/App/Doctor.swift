@@ -13,6 +13,7 @@ enum Doctor {
         checkPort(19000, what: "RTP source port")
         checkInterfaces()
         checkVPN()
+        checkExtendMode()
         print("""
 
         Local Network permission: if `Mira list` finds nothing although the adapter is on, make sure Mira is
@@ -21,7 +22,7 @@ enum Doctor {
         Also check on the adapter side:
           • A Microsoft *4K* Wireless Display Adapter. The older non-4K model has no Wi-Fi/infrastructure mode.
           • Joined to the same 5 GHz WPA2/WPA3-Personal network via the Microsoft Wireless Display Adapter app
-            (Windows / Xbox) with current firmware. Enterprise (802.1X) and captive-portal networks are not supported.
+            on a Windows 10/11 PC, with current firmware. Enterprise (802.1X) and captive-portal networks are not supported.
           • The network allows device-to-device traffic (guest Wi-Fi / "client isolation" breaks this).
           • `Mira list` (or `dns-sd -B _display._tcp`) shows the adapter.
         """)
@@ -66,6 +67,9 @@ enum Doctor {
     private static func checkPort(_ port: UInt16, what: String) {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         defer { close(fd) }
+        // Same as Mira's listener: lingering TIME_WAIT sockets from a previous session don't count.
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
@@ -102,6 +106,19 @@ enum Doctor {
         print("  ℹ️  A VPN is connected. Discovery handles that, but if the adapter can't be reached, try disconnecting it.")
     }
 
+
+    // Creates and drops a small virtual display to see whether Extend mode can work here.
+    private static func checkExtendMode() {
+        guard ExtendedDisplay.isSupported else {
+            print("  ℹ️  Extend (second screen) mode is not available on this macOS version; Mirror mode works")
+            return
+        }
+        var result: Bool?
+        Task { @MainActor in result = await ExtendedDisplay.probe() }
+        while result == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        if result == true { ok("Extend (second screen) mode works on this Mac") }
+        else { print("  ℹ️  Extend (second screen) mode: macOS didn't switch the virtual display on, so Mira will mirror instead") }
+    }
 
     private static func ok(_ s: String) { print("  ✅ \(s)") }
     private static func warn(_ s: String, fix: String) { print("  ⚠️  \(s)\n    → \(fix)") }

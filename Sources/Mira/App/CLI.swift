@@ -23,7 +23,12 @@ enum CLI {
       --audio-codec <c>       auto (default: AAC, else LPCM) | aac | lpcm
       --resolution <r>        auto (default) | 1080p | 720p
       --fps <n>               30 (default) or 60 (only if the sink supports it)
-      --bitrate <mbps>        Video bitrate in Mbit/s (default 6)
+      --bitrate <mbps|auto>   auto (default): adapts to the Wi-Fi, up to --max-bitrate; a number = fixed
+      --max-bitrate <mbps>    Ceiling for auto bitrate (default 12)
+      --extend                Use the TV as a second screen instead of mirroring (virtual display)
+      --security <s>          auto (default) | off | encrypted | pin   (MS-MICE DTLS / PIN pairing)
+      --pin <digits>          PIN shown on the TV (otherwise asked for when needed)
+      --keep-mac-audio        Don't mute the Mac's speakers while mirroring
       --delay <ms>            Sink buffer / latency (default: 200 AAC, 150 LPCM, 120 video-only)
       --name <text>           Name shown on the TV (default: this Mac's name)
       --port <n>              Sink's MICE port (default 7250)
@@ -44,6 +49,7 @@ enum CLI {
             Log.consoleLevel = .debug
             args.removeAll { $0 == "--verbose" || $0 == "-v" }
         }
+        MacAudioMuter.restoreAfterCrash()       // unmute if a previous session was killed
         let command = args.first ?? "help"
         do {
             switch command {
@@ -115,6 +121,9 @@ enum CLI {
 
     private static func connect(_ args: [String]) throws -> Never {
         var opts = MiraController.Options()
+        opts.prefs.bitrate = Settings.autoBitrateMax * 1_000_000
+        var fixedBitrate = false
+        var maxBitrate: Int?
         var target: String?
         var micePort = MiracastDevice.defaultMICEPort
         var i = 0
@@ -158,8 +167,30 @@ enum CLI {
             case "--fps": opts.prefs.fps = try number(a)
             case "--bitrate":
                 let v = try value(a)
-                guard let mbps = Double(v), mbps > 0.2, mbps <= 40 else { throw ParseError(description: "--bitrate in Mbit/s, e.g. 6") }
-                opts.prefs.bitrate = Int(mbps * 1_000_000)
+                if v == "auto" {
+                    opts.adaptiveBitrate = true
+                } else {
+                    guard let mbps = Double(v), mbps > 0.2, mbps <= 40 else { throw ParseError(description: "--bitrate auto, or Mbit/s, e.g. 6") }
+                    opts.prefs.bitrate = Int(mbps * 1_000_000)
+                    opts.adaptiveBitrate = false
+                    fixedBitrate = true
+                }
+            case "--max-bitrate":
+                let v = try value(a)
+                guard let mbps = Double(v), mbps > 0.5, mbps <= 40 else { throw ParseError(description: "--max-bitrate in Mbit/s, e.g. 12") }
+                maxBitrate = Int(mbps * 1_000_000)
+            case "--extend": opts.extendDisplay = true
+            case "--keep-mac-audio": opts.muteMac = false
+            case "--security":
+                let v = try value(a)
+                guard let c = MiraController.SecurityChoice(rawValue: v) else {
+                    throw ParseError(description: "--security must be auto, off, encrypted or pin")
+                }
+                opts.security = c
+            case "--pin":
+                let v = try value(a)
+                guard !v.isEmpty, v.allSatisfy(\.isNumber) else { throw ParseError(description: "--pin takes the digits shown on the TV") }
+                opts.pin = v
             case "--delay":
                 let ms: Int = try number(a)
                 opts.ptsDelay = Double(ms) / 1000
@@ -176,9 +207,17 @@ enum CLI {
             i += 1
         }
         guard let target else { throw ParseError(description: "connect needs an IP address or device name") }
+        if !fixedBitrate, let maxBitrate { opts.prefs.bitrate = maxBitrate }
         Log.info("Mira", "Mira \(AppInfo.version) — log file: \(Log.logFileURL.path)")
 
         let controller = MiraController(options: opts)
+        // PIN entry in the terminal, if the display asks for one and --pin wasn't given.
+        controller.pinProvider = { completion in
+            DispatchQueue.global().async {
+                FileHandle.standardError.write(Data("\n🔑 Enter the PIN shown on the TV: ".utf8))
+                completion(readLine())
+            }
+        }
         var everStreamed = false
         controller.onStatusChanged = { status in
             switch status {
@@ -188,16 +227,14 @@ enum CLI {
             case .failed:
                 // The controller already logged the reason.
                 Log.info("Mira", "❌ Failed. Full log: \(Log.logFileURL.path)")
-                Log.flush()
-                exit(everStreamed ? 0 : 1)
+                exitSoon(everStreamed ? 0 : 1)
             case .idle:
                 if everStreamed {
                     Log.info("Mira", "Session ended")
                 } else {
                     Log.error("Mira", "❌ Session ended before streaming started. Full log: \(Log.logFileURL.path)")
                 }
-                Log.flush()
-                exit(everStreamed ? 0 : 1)
+                exitSoon(everStreamed ? 0 : 1)
             case .connecting:
                 break
             }
@@ -218,7 +255,10 @@ enum CLI {
         t.schedule(deadline: .now() + 5, repeating: 5)
         t.setEventHandler {
             let s = controller.currentStats
-            if s.isStreaming { Log.info("Stats", String(format: "%.1f fps, %d kbit/s", s.fps, s.kbps)) }
+            if s.isStreaming {
+                Log.info("Stats", String(format: "%.1f fps, %d kbit/s sent (target %d)%@", s.fps, s.kbps, s.targetKbps,
+                                         s.encrypted ? ", encrypted" : ""))
+            }
         }
         t.resume()
         statsTimer = t
@@ -245,6 +285,15 @@ enum CLI {
         }
         RunLoop.main.run()
         exit(0)
+    }
+
+    // Status callbacks run on the controller's queue; exiting right there would kill the
+    // process before queued work (e.g. an encrypted STOP_PROJECTION) reaches the wire.
+    private static func exitSoon(_ code: Int32) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            Log.flush()
+            exit(code)
+        }
     }
 
     static func isIPAddress(_ s: String) -> Bool {

@@ -17,6 +17,9 @@ errors were detected — so it doubles as an end-to-end test.
 """
 import argparse
 import asyncio
+import hashlib
+import re
+import random
 import shutil
 import struct
 import subprocess
@@ -51,12 +54,103 @@ def parse_mice(buf):
     size, version, command = struct.unpack(">HBB", buf[:4])
     if len(buf) < size:
         return None, buf
-    tlvs, i = {}, 4
-    while i < size:
-        t, ln = struct.unpack(">BH", buf[i:i + 3])
-        tlvs[t] = buf[i + 3:i + 3 + ln]
+    body = buf[4:size]
+    return {"version": version, "command": command, "body": body, "tlvs": parse_tlvs(body), "size": size}, buf[size:]
+
+
+def parse_tlvs(body):
+    tlvs, i = {}, 0
+    while i + 3 <= len(body):
+        t, ln = struct.unpack(">BH", body[i:i + 3])
+        tlvs[t] = body[i + 3:i + 3 + ln]
         i += 3 + ln
-    return {"version": version, "command": command, "tlvs": tlvs, "size": size}, buf[size:]
+    return tlvs
+
+
+def build_tlvs(items):
+    return b"".join(struct.pack(">BH", t, len(v)) + v for t, v in items)
+
+
+def build_mice(command, body):
+    return struct.pack(">HBB", 4 + len(body), 1, command) + body
+
+
+class DTLSServer:
+    """Sink side of the MS-MICE DTLS exchange (pyOpenSSL with memory BIOs)."""
+
+    def __init__(self):
+        try:
+            from OpenSSL import SSL
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+        except ImportError:
+            sys.exit("security modes need pyOpenSSL: python3 -m pip install pyopenssl cryptography")
+        import datetime, tempfile, os
+        self.SSL = SSL
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(x509.oid.NameOID.COMMON_NAME, "Mock MICE Sink")])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
+                .not_valid_after(now + datetime.timedelta(days=2)).sign(key, hashes.SHA256()))
+        d = tempfile.mkdtemp()
+        cp, kp = os.path.join(d, "c.pem"), os.path.join(d, "k.pem")
+        open(cp, "wb").write(cert.public_bytes(serialization.Encoding.PEM))
+        open(kp, "wb").write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                               serialization.NoEncryption()))
+        ctx = SSL.Context(SSL.DTLS_METHOD)
+        ctx.set_options(getattr(SSL, "OP_NO_QUERY_MTU", 0x00001000))
+        ctx.use_certificate_file(cp)
+        ctx.use_privatekey_file(kp)
+        self.conn = SSL.Connection(ctx, None)
+        self.conn.set_accept_state()
+        try:
+            self.conn.set_ciphertext_mtu(1400)
+        except Exception:
+            pass
+        self.done = False
+        self.decrypted = 0
+        self.failed = 0
+
+    def _drain(self):
+        out = b""
+        while True:
+            try:
+                out += self.conn.bio_read(65536)
+            except self.SSL.WantReadError:
+                return out
+
+    def feed_handshake(self, token):
+        self.conn.bio_write(token)
+        try:
+            self.conn.do_handshake()
+            self.done = True
+        except self.SSL.WantReadError:
+            pass
+        return self._drain()
+
+    def decrypt(self, record):
+        self.conn.bio_write(record)
+        try:
+            data = self.conn.recv(65536)
+            self.decrypted += 1
+            return data
+        except (self.SSL.WantReadError, self.SSL.Error):
+            self.failed += 1
+            return None
+
+    def encrypt(self, plaintext):
+        self.conn.send(plaintext)
+        return self._drain()
+
+    def describe(self):
+        return f"{self.conn.get_protocol_version_name()} {self.conn.get_cipher_name()}"
+
+
+def socket_ip_bytes(ip):
+    import ipaddress
+    return ipaddress.ip_address(ip).packed
 
 
 def decode_name(b):
@@ -152,6 +246,10 @@ class MediaStats:
         self.keyframes = 0
         self.audio_stream_ids = set()
         self.lpcm_errors = 0
+        self.dropped = 0
+        self.decrypt_errors = 0
+        self.encrypted_rtp = 0
+        self.lossy = False
 
     def rtp(self, data):
         now = time.monotonic()
@@ -238,6 +336,10 @@ class MediaStats:
             errs.append("no RTP packets received")
         if self.bad_pt:
             errs.append(f"{self.bad_pt} RTP packets with wrong version/payload type")
+        if self.decrypt_errors:
+            errs.append(f"{self.decrypt_errors} RTP packets could not be decrypted")
+        if self.lossy:
+            return errs                          # gaps/late data are expected with --loss
         if self.seq_gaps:
             errs.append(f"{self.seq_gaps} RTP sequence gaps")
         if self.sync_errors:
@@ -265,6 +367,10 @@ class MediaStats:
         mbps = self.rtp_bytes * 8 / max(elapsed, 0.001) / 1e6
         log("Media", f"{self.rtp_packets} RTP pkts ({mbps:.2f} Mbit/s), {self.ts_packets} TS pkts, "
                      f"PIDs {{{', '.join(f'0x{p:04x}:{n}' for p, n in sorted(self.pids.items()))}}}")
+        if self.encrypted_rtp:
+            log("Media", f"RTP was encrypted: {self.encrypted_rtp} DTLS records decrypted")
+        if self.dropped:
+            log("Media", f"Simulated loss: dropped {self.dropped} RTP packets")
         codec = {0xC0: "AAC", 0xBD: "LPCM"}
         log("Media", "audio stream: " + (", ".join(codec.get(i, hex(i)) for i in sorted(self.audio_stream_ids)) or "none"))
         log("Media", f"video PES {self.pes[VIDEO_PID]} (~{self.pes[VIDEO_PID] / max(elapsed, 0.001):.1f} fps, "
@@ -274,10 +380,23 @@ class MediaStats:
 
 
 class RTPReceiver(asyncio.DatagramProtocol):
-    def __init__(self, stats, sinks):
-        self.stats, self.sinks = stats, sinks
+    def __init__(self, stats, sinks, sink):
+        self.stats, self.sinks, self.sink = stats, sinks, sink
 
     def datagram_received(self, data, addr):
+        if self.sink.a.loss and random.random() < self.sink.a.loss / 100:
+            self.stats.dropped += 1
+            return
+        if self.sink.dtls and self.sink.dtls.done:
+            data = self.sink.dtls.decrypt(data)
+            if data is None:
+                self.stats.decrypt_errors += 1
+                return
+            self.stats.encrypted_rtp += 1
+        elif self.sink.dtls:
+            self.stats.decrypt_errors += 1      # RTP before the handshake finished
+            return
+        self.sink.note_rtp(data)
         payload = self.stats.rtp(data)
         for s in self.sinks:
             try:
@@ -297,6 +416,20 @@ class MockSink:
         self.sinks = []
         self.play_started = None
         self.mice_writer = None
+        self.dtls = None
+        self.session_options = 0
+        self.pin = None
+        self.pin_ok = False
+        self.source_ip = None
+        self.stats.lossy = bool(args.loss)
+        # RTCP receiver reports
+        self.rtcp_dest = None
+        self.rr_ssrc = random.getrandbits(32)
+        self.rtp_ssrc = None
+        self.max_seq = None
+        self.cycles = 0
+        self.interval_received = 0
+        self.interval_base = None
 
     async def run(self):
         loop = asyncio.get_running_loop()
@@ -309,8 +442,11 @@ class MockSink:
                                   "-framedrop", "-window_title", "Mira mock sink", "-f", "mpegts", "-"],
                                  stdin=subprocess.PIPE)
             self.sinks.append(p.stdin)
-        await loop.create_datagram_endpoint(lambda: RTPReceiver(self.stats, self.sinks),
+        await loop.create_datagram_endpoint(lambda: RTPReceiver(self.stats, self.sinks, self),
                                             local_addr=(self.a.bind, self.a.rtp_port))
+        self.rtcp_transport, _ = await loop.create_datagram_endpoint(asyncio.DatagramProtocol,
+                                                                     local_addr=(self.a.bind, self.a.rtp_port + 1))
+        asyncio.create_task(self.send_receiver_reports())
         server = await asyncio.start_server(self.on_mice, self.a.bind, self.a.mice_port)
         log("MICE", f"Listening on {self.a.bind}:{self.a.mice_port}, RTP on UDP {self.a.rtp_port}")
 
@@ -347,44 +483,151 @@ class MockSink:
             log("FAIL", "WFD session did not complete")
         return 1
 
+    def mice_send(self, command, items, encrypt=False):
+        body = build_tlvs(items)
+        if encrypt:
+            body = self.dtls.encrypt(body)
+        self.mice_writer.write(build_mice(command, body))
+
+    def secure_messages(self):
+        # [MS-MICE] 3.1.5.5: after a SESSION_REQUEST, TLVArrays are encrypted once DTLS is up.
+        return self.session_options and self.dtls and self.dtls.done
+
     async def on_mice(self, reader, writer):
         peer = writer.get_extra_info("peername")[0]
+        self.source_ip = peer
         log("MICE", f"Source connected from {peer}")
         self.mice_writer = writer
+        # Each signalling connection is a fresh attempt (a source may retry with PIN pairing).
+        self.dtls = None
+        self.session_options = 0
+        self.pin_ok = False
+        self.dtls_logged = False
         buf = b""
         while True:
-            data = await reader.read(4096)
+            data = await reader.read(65536)
             if not data:
                 log("MICE", "Source closed signalling connection")
-                self.done.set()
+                if self.ok:
+                    self.done.set()
                 return
             buf += data
             while True:
                 msg, buf = parse_mice(buf)
                 if not msg:
                     break
-                t = msg["tlvs"]
-                if msg["command"] == 1:
-                    name = decode_name(t.get(0, b""))
-                    port = struct.unpack(">H", t[2])[0] if 2 in t else None
-                    sid = t.get(3, b"").hex()
-                    log("MICE", f"<- SOURCE_READY v{msg['version']} name='{name}' rtsp_port={port} "
-                                f"source_id={sid} ({msg['size']} bytes)")
-                    problems = []
-                    if msg["version"] != 1: problems.append("version != 1")
-                    if port is None: problems.append("missing RTSP_PORT TLV")
-                    if len(t.get(3, b"")) != 16: problems.append("SOURCE_ID is not 16 bytes")
-                    if 0 not in t: problems.append("missing FRIENDLY_NAME TLV")
-                    if problems:
-                        log("FAIL", "SOURCE_READY invalid: " + ", ".join(problems))
-                        self.done.set()
-                        return
-                    asyncio.create_task(self.rtsp(peer, port))
-                elif msg["command"] == 2:
-                    log("MICE", f"<- STOP_PROJECTION name='{decode_name(t.get(0, b''))}'")
-                    self.done.set()
-                else:
-                    log("MICE", f"<- command {msg['command']} (ignored)")
+                if not self.handle_mice(msg, peer):
+                    return
+
+    def handle_mice(self, msg, peer):
+        cmd = msg["command"]
+        t = msg["tlvs"]
+        if cmd in (1, 2, 5) and self.secure_messages():
+            plain = self.dtls.decrypt(msg["body"])
+            if plain is None:
+                log("FAIL", f"could not decrypt TLVArray of command {cmd}")
+                self.done.set()
+                return False
+            t = parse_tlvs(plain)
+            log("MICE", f"   (TLVArray of command {cmd} decrypted: {len(msg['body'])} → {len(plain)} bytes)")
+
+        if cmd == 4:                                            # SESSION_REQUEST
+            self.session_options = t.get(5, b"\x00")[0]
+            log("MICE", f"<- SESSION_REQUEST name='{decode_name(t.get(0, b''))}' options=0x{self.session_options:02x}")
+            if self.session_options & 0x02:
+                self.pin = self.a.pin or "".join(random.choice("0123456789") for _ in range(8))
+                log("MICE", f"   📺 PIN shown on the TV: {self.pin}")
+            if self.session_options & 0x02 and not self.session_options & 0x01:
+                log("FAIL", "SinkDisplaysPin set without UseDtlsStreamEncryption (spec: bit A MUST be set)")
+        elif cmd == 3:                                          # SECURITY_HANDSHAKE
+            if self.dtls is None:
+                self.dtls = DTLSServer()
+                log("MICE", "<- SECURITY_HANDSHAKE (starting DTLS)")
+            out = self.dtls.feed_handshake(t.get(4, b""))
+            if out:
+                self.mice_send(3, [(4, out)])
+            if self.dtls.done and not getattr(self, "dtls_logged", False):
+                self.dtls_logged = True
+                log("MICE", f"   DTLS handshake complete: {self.dtls.describe()}")
+        elif cmd == 5:                                          # PIN_CHALLENGE
+            got = t.get(6, b"")
+            ip = socket_ip_bytes(peer)
+            expected = hashlib.sha256(self.pin.encode() + ip).digest() if self.pin else b""
+            ok = got == expected
+            log("MICE", f"<- PIN_CHALLENGE ({'correct' if ok else 'WRONG'} PIN hash)")
+            self.mice_send(6, [(6, got), (3, t.get(3, b"")), (7, bytes([0 if ok else 1]))],
+                           encrypt=bool(self.secure_messages()))
+            self.pin_ok = ok
+            if not ok:
+                log("FAIL", "PIN hash mismatch")
+        elif cmd == 1:                                          # SOURCE_READY
+            name = decode_name(t.get(0, b""))
+            port = struct.unpack(">H", t[2])[0] if 2 in t else None
+            sid = t.get(3, b"").hex()
+            log("MICE", f"<- SOURCE_READY v{msg['version']} name='{name}' rtsp_port={port} "
+                        f"source_id={sid} ({msg['size']} bytes)")
+            problems = []
+            if msg["version"] != 1: problems.append("version != 1")
+            if port is None: problems.append("missing RTSP_PORT TLV")
+            if len(t.get(3, b"")) != 16: problems.append("SOURCE_ID is not 16 bytes")
+            if 0 not in t: problems.append("missing FRIENDLY_NAME TLV")
+            if problems:
+                log("FAIL", "SOURCE_READY invalid: " + ", ".join(problems))
+                self.done.set()
+                return False
+            if self.a.security == "pin" and not self.pin_ok:
+                log("MICE", "   ignoring SOURCE_READY: this sink requires PIN pairing (--security pin)")
+                return True
+            if self.a.security == "encrypted" and not (self.dtls and self.dtls.done):
+                log("MICE", "   ignoring SOURCE_READY: this sink requires encryption (--security encrypted)")
+                return True
+            asyncio.create_task(self.rtsp(peer, port))
+        elif cmd == 2:
+            log("MICE", f"<- STOP_PROJECTION name='{decode_name(t.get(0, b''))}'")
+            if self.ok:
+                self.done.set()
+            else:
+                log("MICE", "   (no session was running — waiting for the source to try again)")
+                return False
+        else:
+            log("MICE", f"<- command {cmd} (ignored)")
+        return True
+
+    # RTCP receiver reports (RFC 3550 §6.4.2), so the source's adaptive bitrate has data.
+    def note_rtp(self, data):
+        if len(data) < 12:
+            return
+        seq = struct.unpack(">H", data[2:4])[0]
+        self.rtp_ssrc = struct.unpack(">I", data[8:12])[0]
+        if self.max_seq is None:
+            self.max_seq = seq
+            self.interval_base = seq
+        elif ((seq - self.max_seq) & 0xFFFF) < 0x8000:
+            if seq < self.max_seq:
+                self.cycles += 1 << 16
+            self.max_seq = seq
+        self.interval_received += 1
+
+    async def send_receiver_reports(self):
+        cumulative_lost = 0
+        prev_ext = None
+        while not self.done.is_set():
+            await asyncio.sleep(1)
+            if self.rtcp_dest is None or self.rtp_ssrc is None:
+                continue
+            ext = self.cycles + self.max_seq
+            expected = ext - (prev_ext if prev_ext is not None else self.interval_base - 1)
+            lost = max(0, expected - self.interval_received)
+            cumulative_lost += lost
+            fraction = min(255, (lost * 256) // expected) if expected > 0 else 0
+            prev_ext = ext
+            self.interval_received = 0
+            rr = struct.pack(">BBHI", 0x81, 201, 7, self.rr_ssrc)
+            rr += struct.pack(">IB", self.rtp_ssrc, fraction) + (cumulative_lost & 0xFFFFFF).to_bytes(3, "big")
+            rr += struct.pack(">IIII", ext & 0xFFFFFFFF, 0, 0, 0)
+            self.rtcp_transport.sendto(rr, self.rtcp_dest)
+            if fraction:
+                log("RTCP", f"-> RR: {fraction * 100 / 256:.1f}% lost")
 
     async def rtsp(self, host, port):
         try:
@@ -441,6 +684,9 @@ class MockSink:
             r = await c.read()
             assert r["start"].startswith("RTSP/1.0 200"), "SETUP failed"
             session = r["headers"]["session"].split(";")[0]
+            m = re.search(r"server_port=(\d+)(?:-(\d+))?", r["headers"].get("transport", ""))
+            if m:
+                self.rtcp_dest = (host, int(m.group(2) or int(m.group(1)) + 1))
             log("Sink", f"Session {session}, Transport: {r['headers'].get('transport')}")
             # M7
             c.request("PLAY", url, [("Session", session)])
@@ -480,6 +726,8 @@ class MockSink:
         await asyncio.sleep(0.5)
         if self.stats.keyframes > before:
             log("Sink", "IDR request honoured")
+        elif self.a.loss:
+            log("Sink", "IDR keyframe not seen (expected possible with --loss)")
         else:
             log("FAIL", "no keyframe within 500 ms of wfd_idr_request")
             self.ok = False
@@ -508,6 +756,10 @@ def main():
     ap.add_argument("--no-m2", action="store_true", help="don't send M2 OPTIONS (some sinks skip it)")
     ap.add_argument("--video-formats", default=DEFAULT_VIDEO_FORMATS, help="wfd_video_formats value to advertise")
     ap.add_argument("--advertise", metavar="NAME", help="register NAME as _display._tcp via dns-sd")
+    ap.add_argument("--security", choices=["none", "encrypted", "pin"], default="none",
+                    help="require MS-MICE security: plain SOURCE_READY is ignored until it's satisfied")
+    ap.add_argument("--pin", help="PIN to 'display' (default: random 8 digits)")
+    ap.add_argument("--loss", type=float, default=0, help="drop this %% of RTP packets and report it via RTCP")
     ap.add_argument("--timing-tolerance-ms", type=float, default=0,
                     help="extra slack for PCR gaps / late PES (CI VMs have no hardware encoder)")
     a = ap.parse_args()

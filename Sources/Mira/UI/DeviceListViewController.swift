@@ -28,10 +28,15 @@ final class DeviceListViewController: NSViewController {
     private let audioCheckbox = NSButton(checkboxWithTitle: "Audio", target: nil, action: nil)
     private let testPatternCheckbox = NSButton(checkboxWithTitle: "Test pattern", target: nil, action: nil)
     private let loginCheckbox = NSButton(checkboxWithTitle: "Open at login", target: nil, action: nil)
+    private let modePopup = NSPopUpButton()
+    private let securityPopup = NSPopUpButton()
+    private let muteCheckbox = NSButton(checkboxWithTitle: "Sound only on TV", target: nil, action: nil)
+    private let reconnectCheckbox = NSButton(checkboxWithTitle: "Reconnect on launch", target: nil, action: nil)
     private let updateButton = NSButton(title: "", target: nil, action: nil)
 
-    private static let width: CGFloat = 320
-    private static let bitrates = [3, 4, 6, 8, 12, 16]
+    private static let width: CGFloat = 340
+    private static let bitrates = [0, 3, 4, 6, 8, 12, 16]       // 0 = Auto
+    private static let securities: [MiraController.SecurityChoice] = [.auto, .off, .encrypted, .pin]
     private static let resolutions: [StreamPreferences.ResolutionChoice] = [.auto, .p1080, .p720]
 
     override func loadView() {
@@ -83,20 +88,26 @@ final class DeviceListViewController: NSViewController {
         ipRow.spacing = 6
 
         // Settings (apply to the next connection)
-        for popup in [displayPopup, resolutionPopup, bitratePopup] {
+        for popup in [displayPopup, resolutionPopup, bitratePopup, modePopup, securityPopup] {
             popup.controlSize = .small
             popup.font = .systemFont(ofSize: 11)
             popup.target = self
             popup.action = #selector(settingsChanged)
         }
         displayPopup.toolTip = "Display to mirror"
-        resolutionPopup.addItems(withTitles: ["Auto", "1080p", "720p"])
+        resolutionPopup.addItems(withTitles: ["Best", "1080p", "720p"])
         resolutionPopup.selectItem(at: Self.resolutions.firstIndex(of: Settings.resolution) ?? 0)
         resolutionPopup.toolTip = "Resolution (Auto = best the display supports)"
-        bitratePopup.addItems(withTitles: Self.bitrates.map { "\($0) Mbit/s" })
-        bitratePopup.selectItem(at: Self.bitrates.firstIndex(of: Settings.bitrateMbps) ?? 2)
-        bitratePopup.toolTip = "Video bitrate — lower it if the picture stutters"
-        for box in [audioCheckbox, testPatternCheckbox, loginCheckbox] {
+        bitratePopup.addItems(withTitles: Self.bitrates.map { $0 == 0 ? "Auto quality" : "\($0) Mbit/s" })
+        bitratePopup.selectItem(at: Self.bitrates.firstIndex(of: Settings.bitrateMbps) ?? 0)
+        bitratePopup.toolTip = "Auto adapts the bitrate to your Wi-Fi (up to \(Settings.autoBitrateMax) Mbit/s); a number keeps it fixed"
+        modePopup.addItems(withTitles: ["Mirror", "Extend"])
+        modePopup.selectItem(at: Settings.extendDisplay ? 1 : 0)
+        modePopup.toolTip = "Mirror shows your screen on the TV; Extend makes the TV a second screen"
+        securityPopup.addItems(withTitles: ["Security: Auto", "Security: Off", "Security: Encrypted", "Security: PIN"])
+        securityPopup.selectItem(at: Self.securities.firstIndex(of: Settings.security) ?? 0)
+        securityPopup.toolTip = "Auto connects normally and asks for a PIN only if the display insists"
+        for box in [audioCheckbox, testPatternCheckbox, loginCheckbox, muteCheckbox, reconnectCheckbox] {
             box.controlSize = .small
             box.font = .systemFont(ofSize: 11)
             box.target = self
@@ -106,6 +117,12 @@ final class DeviceListViewController: NSViewController {
         testPatternCheckbox.state = Settings.testPattern ? .on : .off
         testPatternCheckbox.action = #selector(settingsChanged)
         testPatternCheckbox.toolTip = "Send colour bars and a beep instead of the screen — for testing a new display"
+        muteCheckbox.state = Settings.muteMac ? .on : .off
+        muteCheckbox.action = #selector(settingsChanged)
+        muteCheckbox.toolTip = "Mute the Mac's speakers while mirroring so you don't hear everything twice"
+        reconnectCheckbox.state = Settings.reconnectOnLaunch ? .on : .off
+        reconnectCheckbox.action = #selector(settingsChanged)
+        reconnectCheckbox.toolTip = "Connect to the last display automatically when Mira starts"
         loginCheckbox.action = #selector(loginToggled)
         loginCheckbox.isHidden = !AppInfo.isAppBundle
         refreshLoginCheckbox()
@@ -113,10 +130,12 @@ final class DeviceListViewController: NSViewController {
         let settingsTitle = NSTextField(labelWithString: "Settings — apply to the next connection")
         settingsTitle.font = .systemFont(ofSize: 10)
         settingsTitle.textColor = .tertiaryLabelColor
-        let row2 = NSStackView(views: [resolutionPopup, bitratePopup, audioCheckbox])
+        let row2 = NSStackView(views: [modePopup, resolutionPopup, bitratePopup])
         row2.spacing = 6
-        let row3 = NSStackView(views: [testPatternCheckbox, loginCheckbox])
-        row3.spacing = 12
+        let row3 = NSStackView(views: [audioCheckbox, muteCheckbox, securityPopup])
+        row3.spacing = 8
+        let row4 = NSStackView(views: [testPatternCheckbox, reconnectCheckbox, loginCheckbox])
+        row4.spacing = 10
 
         updateButton.bezelStyle = .inline
         updateButton.controlSize = .small
@@ -127,10 +146,13 @@ final class DeviceListViewController: NSViewController {
         let logButton = Self.linkButton("Log", self, #selector(openLog))
         let helpButton = Self.linkButton("Help", self, #selector(openHelp))
         let quitButton = Self.linkButton("Quit", self, #selector(quit))
-        let footer = NSStackView(views: [logButton, helpButton, NSView(), quitButton])
+        let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.displayString) start/stop")
+        shortcut.font = .systemFont(ofSize: 10)
+        shortcut.textColor = .tertiaryLabelColor
+        let footer = NSStackView(views: [logButton, helpButton, NSView(), shortcut, quitButton])
 
         let stack = NSStackView(views: [titleRow, statusLabel, scrollView, stopButton, ipRow,
-                                        settingsTitle, displayPopup, row2, row3, updateButton, footer])
+                                        settingsTitle, displayPopup, row2, row3, row4, updateButton, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -208,7 +230,11 @@ final class DeviceListViewController: NSViewController {
 
     func setStats(_ stats: MiraStats) {
         guard let d = stats.device else { return }
-        statusLabel.stringValue = "Mirroring to \(d.name) · \(stats.resolution) · \(Int(stats.fps.rounded())) fps · \(String(format: "%.1f", Double(stats.kbps) / 1000)) Mbit/s"
+        var extras: [String] = []
+        if stats.extended { extras.append("second screen") }
+        if stats.extendFailure != nil { extras.append("(second screen not available on this Mac)") }
+        if stats.encrypted { extras.append("🔒") }
+        statusLabel.stringValue = "\(stats.extended ? "Extending" : "Mirroring") to \(d.name) · \(stats.resolution) · \(Int(stats.fps.rounded())) fps · \(String(format: "%.1f", Double(stats.kbps) / 1000)) of \(String(format: "%.1f", Double(stats.targetKbps) / 1000)) Mbit/s" + (extras.isEmpty ? "" : " · " + extras.joined(separator: " "))
     }
 
     func setUpdate(_ release: UpdateChecker.Release?) {
@@ -274,6 +300,10 @@ final class DeviceListViewController: NSViewController {
     @objc private func settingsChanged() {
         Settings.resolution = Self.resolutions[max(0, resolutionPopup.indexOfSelectedItem)]
         Settings.bitrateMbps = Self.bitrates[max(0, bitratePopup.indexOfSelectedItem)]
+        Settings.extendDisplay = modePopup.indexOfSelectedItem == 1
+        Settings.security = Self.securities[max(0, securityPopup.indexOfSelectedItem)]
+        Settings.muteMac = muteCheckbox.state == .on
+        Settings.reconnectOnLaunch = reconnectCheckbox.state == .on
         Settings.audio = audioCheckbox.state == .on
         Settings.testPattern = testPatternCheckbox.state == .on
         let i = displayPopup.indexOfSelectedItem

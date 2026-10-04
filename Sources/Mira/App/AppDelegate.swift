@@ -7,21 +7,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller = MiraController(options: Settings.options())
     private var statsTimer: Timer?
     private var updateTimer: Timer?
+    private var hotKey: GlobalHotKey?
+    private var pendingAutoConnect: MiracastDevice?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.info("Mira", "Menu bar app \(AppInfo.version) (\(AppInfo.build)) started; log file \(Log.logFileURL.path)")
+        MacAudioMuter.restoreAfterCrash()
         statusBar = StatusBarController()
 
         statusBar.onMirrorRequested = { [weak self] device in self?.startMirroring(to: device) }
         statusBar.onStopRequested = { [weak self] in self?.controller.stop() }
 
         controller.onDevicesChanged = { [weak self] devices in
-            DispatchQueue.main.async { self?.statusBar.updateDevices(devices) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.statusBar.updateDevices(devices)
+                // Reconnect on launch: wait until the remembered display shows up.
+                if let want = self.pendingAutoConnect, let d = devices.first(where: { $0.name == want.name }) {
+                    self.pendingAutoConnect = nil
+                    Log.info("Mira", "Reconnecting to \(d.name) (reconnect on launch)")
+                    self.startMirroring(to: d)
+                }
+            }
+        }
+        controller.pinProvider = { completion in
+            DispatchQueue.main.async { completion(Self.askForPIN()) }
         }
         controller.onStatusChanged = { [weak self] status in
             DispatchQueue.main.async { self?.statusChanged(status) }
         }
         controller.startDiscovery()
+
+        hotKey = GlobalHotKey { [weak self] in self?.toggleMirroring() }
+
+        if Settings.reconnectOnLaunch, let last = Settings.lastDevice {
+            if last.name == last.ipAddress {
+                // Added by IP, so it may never appear in discovery.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.startMirroring(to: last) }
+            } else {
+                pendingAutoConnect = last
+                // Fall back to the remembered address if discovery doesn't find it.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                    guard let self, let want = self.pendingAutoConnect else { return }
+                    self.pendingAutoConnect = nil
+                    self.startMirroring(to: want)
+                }
+            }
+        }
 
         // A menu-bar-only app is easy to miss: show the popover on first launch.
         if !UserDefaults.standard.bool(forKey: "launchedBefore") {
@@ -48,6 +80,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.options = options
         controller.connect(to: device)
+    }
+
+    // ⌃⌥⌘M: stop if mirroring, otherwise reconnect to the last display.
+    private func toggleMirroring() {
+        switch controller.status {
+        case .streaming, .connecting:
+            controller.stop()
+        default:
+            if let last = Settings.lastDevice { startMirroring(to: last) } else { statusBar.showPopover() }
+        }
+    }
+
+    private static func askForPIN() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Enter the PIN shown on the TV"
+        alert.informativeText = "The display asked for PIN pairing."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        field.placeholderString = "12345678"
+        field.font = .monospacedDigitSystemFont(ofSize: 15, weight: .regular)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let digits = field.stringValue.filter(\.isNumber)
+        return digits.isEmpty ? nil : digits
     }
 
     private func requestScreenRecordingPermission() {
@@ -81,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func statusChanged(_ status: MiraController.Status) {
         statusBar.setStatus(status)
         if case .failed = status { statusBar.showPopover() }
+        if case .streaming(let device, _) = status { Settings.lastDevice = device }
         if case .streaming = status {
             if statsTimer == nil {
                 statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in

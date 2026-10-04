@@ -12,10 +12,13 @@ final class RTPSender {
     private var _packetsSent: UInt64 = 0
     private var _bytesSent: UInt64 = 0
     private var _sendErrors: UInt64 = 0
+    private var _submitted: UInt64 = 0
 
     var packetsSent: UInt64 { statsLock.withLock { _packetsSent } }
     var bytesSent: UInt64 { statsLock.withLock { _bytesSent } }
     var sendErrors: UInt64 { statsLock.withLock { _sendErrors } }
+    // Packets handed to the network stack but not yet sent — grows when Wi-Fi can't keep up.
+    var backlog: Int { statsLock.withLock { Int(_submitted &- _packetsSent &- _sendErrors) } }
 
     init(localPort: UInt16) {
         self.localPort = localPort
@@ -42,6 +45,7 @@ final class RTPSender {
 
     func send(_ packets: [Data]) {
         guard let connection else { return }
+        statsLock.withLock { _submitted &+= UInt64(packets.count) }
         connection.batch {
             for p in packets {
                 connection.send(content: p, completion: .contentProcessed { [weak self] err in

@@ -21,6 +21,11 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         var displayID: CGDirectDisplayID? = nil
         var dumpTS: URL? = nil
         var ptsDelay: Double = 0.2
+        var adaptiveBitrate = true
+        var minBitrate = 1_500_000
+        var extendedDisplayID: CGDirectDisplayID? = nil   // virtual monitor to stream (extend mode)
+        var muteMac = true                  // silence the Mac's speakers while sending system audio
+        var tunnel: DTLSTunnel? = nil       // MS-MICE stream encryption, when negotiated
     }
 
     struct Stats {
@@ -30,6 +35,9 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         var bytesSent: UInt64 = 0
         var packetsSent: UInt64 = 0
         var sendErrors: UInt64 = 0
+        var bitrate: Int = 0
+        var encrypted = false
+        var extended = false
     }
 
     var onFatalError: ((Error) -> Void)?
@@ -57,12 +65,25 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     private var lastNoFrameWarning: Double = 0
     private var lastFrameSlot: Int64 = -1
     private var clockStarted = false      // muxQueue: nothing is muxed before the stream clock starts
+    private let bitrate: BitrateController
+    private let controlQueue = DispatchQueue(label: "mira.bitrate")
+    private var controlTimer: DispatchSourceTimer?
+    private let sleepGuard = SleepGuard()
+    private let muter = MacAudioMuter()
 
     var stats: Stats {
         var s = statsLock.withLock { _stats }
-        s.bytesSent = rtpSender.bytesSent
-        s.packetsSent = rtpSender.packetsSent
-        s.sendErrors = rtpSender.sendErrors
+        if let tunnel = config.tunnel {
+            s.bytesSent = tunnel.mediaBytesSent
+            s.packetsSent = tunnel.mediaPacketsSent
+            s.encrypted = true
+        } else {
+            s.bytesSent = rtpSender.bytesSent
+            s.packetsSent = rtpSender.packetsSent
+            s.sendErrors = rtpSender.sendErrors
+        }
+        s.bitrate = controlQueue.sync { bitrate.current }
+        s.extended = config.extendedDisplayID != nil
         return s
     }
 
@@ -78,7 +99,14 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         default:     muxer = MPEGTSMuxer(audio: nil)
         }
         rtpSender = RTPSender(localPort: config.localRTPPort)
+        let maxRate = config.bitrate
+        bitrate = BitrateController(config: .init(
+            initial: config.adaptiveBitrate ? min(maxRate, max(config.minBitrate, maxRate * 2 / 3)) : maxRate,
+            minimum: config.adaptiveBitrate ? min(config.minBitrate, maxRate) : maxRate,
+            maximum: maxRate))
     }
+
+
 
     static func hostNow() -> Double { CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) }
 
@@ -92,16 +120,23 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             Log.info("Pipeline", "Writing a copy of the TS stream to \(url.path)")
         }
 
-        rtpSender.connect(toHost: config.sinkIP, port: config.rtpPort)
-        if let rtcp = config.rtcpPort {
-            rtcpSender.start(toHost: config.sinkIP, rtcpPort: rtcp, localPort: config.localRTPPort + 1) { [weak self] in
-                guard let self else { return .init(rtpTimestamp: 0, packets: 0, octets: 0) }
-                return self.muxQueue.sync {
-                    .init(rtpTimestamp: self.lastRTPTimestamp, packets: self.packetizer.packetCount,
-                          octets: self.packetizer.octetCount)
-                }
+        if let tunnel = config.tunnel {
+            try tunnel.setMediaDestination(host: config.sinkIP, port: config.rtpPort, localPort: config.localRTPPort)
+        } else {
+            rtpSender.connect(toHost: config.sinkIP, port: config.rtpPort)
+        }
+        rtcpSender.onReport = { [weak self] block in
+            guard let self else { return }
+            self.controlQueue.async { self.bitrate.report(.loss(fraction: block.fractionLost)) }
+        }
+        rtcpSender.start(sinkHost: config.sinkIP, rtcpPort: config.rtcpPort, localPort: config.localRTPPort + 1) { [weak self] in
+            guard let self else { return .init(rtpTimestamp: 0, packets: 0, octets: 0) }
+            return self.muxQueue.sync {
+                .init(rtpTimestamp: self.lastRTPTimestamp, packets: self.packetizer.packetCount,
+                      octets: self.packetizer.octetCount)
             }
         }
+        bitrate.onChange = { [weak self] bps in self?.encoder.setBitrate(bps) }
 
         encoder.onEncoded = { [weak self] sb, isKey in
             guard let self, let au = H264Bitstream.accessUnit(from: sb, isKeyframe: isKey) else { return }
@@ -109,6 +144,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             self.muxQueue.async { self.muxVideo(au, captureHost: pts, isKeyframe: isKey) }
         }
         try encoder.start()
+        encoder.setBitrate(bitrate.current)
         encoder.warmUp()
 
         if let codec = config.format.audio {
@@ -120,13 +156,17 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             audioEncoder = enc
         }
 
+        // Extend mode: the controller created the virtual display before connecting.
+        let captureDisplay = config.extendedDisplayID ?? config.displayID
+
         let src: VideoSource
         if config.testPattern {
             src = TestPatternSource(width: r.width, height: r.height)
         } else {
             let cap = ScreenCapturer(config: .init(width: r.width, height: r.height, fps: config.fps,
                                                    captureAudio: config.format.audio != nil,
-                                                   displayID: config.displayID))
+                                                   displayID: captureDisplay,
+                                                   requireDisplay: config.extendedDisplayID != nil))
             cap.onStopped = { [weak self] err in if let err { self?.onFatalError?(err) } }
             src = cap
         }
@@ -137,19 +177,27 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         }
         try await src.start()
         source = src
+        sleepGuard.begin(reason: "Mirroring to a Miracast display")
+        if config.muteMac, !config.testPattern, config.format.audio != nil { muter.mute() }
         // Start the stream clock only now, after encoder warm-up and capture start-up.
         muxQueue.sync {
             baseHost = Self.hostNow()
             clockStarted = true
         }
         startPump()
+        startBitrateControl()
+        Log.info("Pipeline", "Streaming \(r) at \(String(format: "%.1f", Double(bitrate.current) / 1e6)) Mbit/s\(config.adaptiveBitrate ? " (adaptive, max \(config.bitrate / 1_000_000))" : "")\(config.tunnel != nil ? ", encrypted" : "")")
     }
 
     func stop() {
         guard !stopped else { return }
         stopped = true
         pumpTimer?.cancel(); pumpTimer = nil
+        controlTimer?.cancel(); controlTimer = nil
         source?.stop(); source = nil
+        sleepGuard.end()
+        muter.restore()
+
         encoder.stop()
         rtcpSender.stop()
         muxQueue.sync {
@@ -162,6 +210,35 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     }
 
     func forceKeyframe() { encoder.forceKeyframe() }
+
+    // The sink asked for an IDR: its decoder lost data — also a sign the link is struggling.
+    func sinkRequestedKeyframe() {
+        encoder.forceKeyframe()
+        controlQueue.async { self.bitrate.report(.idrRequest) }
+    }
+
+    // MARK: - Adaptive bitrate
+
+    private func startBitrateControl() {
+        guard config.adaptiveBitrate else { return }
+        let t = DispatchSource.makeTimerSource(queue: controlQueue)
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            // Packets queued in the network stack for more than ~250 ms of stream time
+            // means the Wi-Fi can't carry the current rate.
+            if self.config.tunnel == nil {
+                let packetsPerSecond = max(1, self.bitrate.current / 8 / 1328)
+                let backlog = self.rtpSender.backlog
+                if backlog > max(60, packetsPerSecond / 4) {
+                    self.bitrate.report(.sendCongestion(backlog: backlog))
+                }
+            }
+            self.bitrate.tick()
+        }
+        t.resume()
+        controlTimer = t
+    }
 
     func setPaused(_ p: Bool) {
         muxQueue.async { self.paused = p }
@@ -235,6 +312,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         let rtpTS = UInt32(truncatingIfNeeded: pcr / 300) &+ rtpTimestampOffset
         lastRTPTimestamp = rtpTS
         let packets = packetizer.packetize(tsPackets: ts, rtpTimestamp: rtpTS, flush: flush)
-        if !packets.isEmpty { rtpSender.send(packets) }
+        guard !packets.isEmpty else { return }
+        if let tunnel = config.tunnel { tunnel.sendMedia(packets) } else { rtpSender.send(packets) }
     }
 }
