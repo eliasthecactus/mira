@@ -231,7 +231,8 @@ struct WFDNegotiatedFormat: Equatable {
     // for sinks, so we always use it; resolution preference is 1080p30 → 720p30 →
     // the mandatory 640x480p60.
     static func choose(sink: WFDSinkCapabilities, prefs: StreamPreferences) -> WFDNegotiatedFormat {
-        let codec = sink.videoFormats?.codecs.first { $0.profile & 0x01 != 0 } ?? sink.videoFormats?.codecs.first
+        let codecs = sink.videoFormats?.codecs ?? []
+        let codec: WFDH264Codec? = codecs.first(where: { $0.profile & 0x01 != 0 }) ?? codecs.first
         let fps = prefs.fps
 
         var candidates: [WFDResolution] = []
