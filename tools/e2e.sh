@@ -9,6 +9,7 @@ set -u
 cd "$(dirname "$0")/.."
 
 OUT="${E2E_OUT:-$(mktemp -d -t mira-e2e)}"
+mkdir -p "$OUT"
 DURATION="${E2E_DURATION:-8}"
 MIRA=.build/debug/Mira
 MIRA_ARGS="${MIRA_ARGS---test-pattern}"   # e.g. MIRA_ARGS="" to capture the real screen
