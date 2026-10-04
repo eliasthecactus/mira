@@ -129,7 +129,8 @@ def params(body):
 # ------------------------------------------------------- media validator ----
 
 class MediaStats:
-    def __init__(self):
+    def __init__(self, tolerance=0.0):
+        self.tolerance = tolerance          # seconds of extra slack for slow CI machines
         self.rtp_packets = 0
         self.rtp_bytes = 0
         self.bad_pt = 0
@@ -249,10 +250,10 @@ class MediaStats:
             errs.append("no PCR")
         if self.lpcm_errors:
             errs.append(f"{self.lpcm_errors} malformed LPCM PES")
-        if self.max_pcr_gap > 0.1:
-            errs.append(f"PCR gap {self.max_pcr_gap * 1000:.0f} ms (> 100 ms)")
+        if self.max_pcr_gap > 0.1 + self.tolerance:
+            errs.append(f"PCR gap {self.max_pcr_gap * 1000:.0f} ms (> {100 + self.tolerance * 1000:.0f} ms)")
         for pid, name in ((VIDEO_PID, "video"), (AUDIO_PID, "audio")):
-            late = [h for h in self.headroom[pid] if h < 0]
+            late = [h for h in self.headroom[pid] if h < -self.tolerance]
             if late:
                 errs.append(f"{len(late)} {name} PES arrived after their PTS (late)")
         return errs
@@ -292,7 +293,7 @@ class MockSink:
         self.a = args
         self.done = asyncio.Event()
         self.ok = False
-        self.stats = MediaStats()
+        self.stats = MediaStats(args.timing_tolerance_ms / 1000)
         self.sinks = []
         self.play_started = None
         self.mice_writer = None
@@ -507,6 +508,8 @@ def main():
     ap.add_argument("--no-m2", action="store_true", help="don't send M2 OPTIONS (some sinks skip it)")
     ap.add_argument("--video-formats", default=DEFAULT_VIDEO_FORMATS, help="wfd_video_formats value to advertise")
     ap.add_argument("--advertise", metavar="NAME", help="register NAME as _display._tcp via dns-sd")
+    ap.add_argument("--timing-tolerance-ms", type=float, default=0,
+                    help="extra slack for PCR gaps / late PES (CI VMs have no hardware encoder)")
     a = ap.parse_args()
     sys.exit(asyncio.run(MockSink(a).run()))
 

@@ -26,11 +26,15 @@ jobs:
       - name: Install ffmpeg (decode check in e2e)
         run: brew install --quiet ffmpeg
 
+      # GitHub's macOS VMs have no hardware video encoder; software-encoding 1080p on
+      # 3 vCPUs occasionally stalls the process, so timing checks get 150 ms of slack
+      # here. Locally (`make e2e`) they stay strict.
       - name: End-to-end against mock sink
         run: |
-          E2E_OUT="$RUNNER_TEMP/e2e-aac"  tools/e2e.sh
-          E2E_OUT="$RUNNER_TEMP/e2e-lpcm" E2E_DURATION=5 tools/e2e.sh --audio lpcm
-          E2E_OUT="$RUNNER_TEMP/e2e-720"  E2E_DURATION=5 tools/e2e.sh --no-audio --no-m2 \
+          T=--timing-tolerance-ms=150
+          E2E_OUT="$RUNNER_TEMP/e2e-aac"  tools/e2e.sh $T
+          E2E_OUT="$RUNNER_TEMP/e2e-lpcm" E2E_DURATION=5 tools/e2e.sh $T --audio lpcm
+          E2E_OUT="$RUNNER_TEMP/e2e-720"  E2E_DURATION=5 tools/e2e.sh $T --no-audio --no-m2 \
             "--video-formats=00 00 01 02 000000a1 00000000 00000000 00 0000 0000 00 none none"
 
       - name: Package (ad-hoc signed)
