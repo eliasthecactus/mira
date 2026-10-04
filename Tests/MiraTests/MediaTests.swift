@@ -146,7 +146,8 @@ extension MPEGTSMuxerTests {
         XCTAssertEqual(pcrPacket[3] & 0x30, 0x20, "adaptation field only")
         packets += soon + late + mux.muxVideo(accessUnit: Data([4]), pts90k: 0, pcr27M: 27_000_000 * 2, isKeyframe: false)
         let d = demux(packets)   // CC must stay continuous across the payload-less packet
-        XCTAssertEqual(d.pcrs, [27_000_000, 27_000_000 + 27_000 * 50, 27_000_000 * 2])
+        let expected: [UInt64] = [27_000_000, 27_000_000 + 27_000 * 50, 27_000_000 * 2]
+        XCTAssertEqual(d.pcrs, expected)
     }
 }
 
