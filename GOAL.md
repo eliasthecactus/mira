@@ -1,320 +1,103 @@
 # Mira
 
-**macOS screen mirroring to Microsoft Wireless Display Adapter (and any Miracast receiver) — built from first principles.**
+**macOS screen mirroring to the Microsoft 4K Wireless Display Adapter (and any Miracast-over-Infrastructure receiver), built from first principles.**
 
 ---
 
 ## Problem
 
-macOS has no native Miracast support. The only working solution is AirParrot ($19.99), which reverse-engineering confirms implements the full WFD/Miracast stack from scratch over infrastructure Wi-Fi (no Wi-Fi Direct needed). Mira does the same thing as a free, open, native macOS app.
+macOS has no native Miracast support. Commercial tools such as AirParrot implement the Wi-Fi Display stack themselves over infrastructure Wi-Fi, so no Wi-Fi Direct is needed. Mira does the same as a free, open, native macOS app.
 
----
+## Core insight
 
-## Core Insight (from AirParrot RE)
+Microsoft's **Miracast over Infrastructure** ([MS-MICE]) runs the whole Miracast session over the normal LAN, using plain TCP/UDP sockets: no Wi-Fi Direct, no drivers. macOS can do all of it. Only receivers that implement MS-MICE work this way. Among Microsoft's adapters that is **only the 4K Wireless Display Adapter**, and only after it has been joined to the Wi-Fi network with Microsoft's app.
 
-The Microsoft Wireless Display Adapter supports **Miracast over Infrastructure**: when both Mac and adapter are on the same Wi-Fi network, the Miracast RTSP control session and RTP media stream run over plain TCP/UDP sockets — no Wi-Fi Direct, no special kernel drivers, no hardware gap. macOS handles this perfectly. The only missing piece was an implementation.
-
----
-
-## Architecture
+## Protocol (as implemented)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Mira.app (macOS, Swift + C)                                    │
-│                                                                 │
-│  ┌──────────────┐   ┌──────────────┐   ┌─────────────────────┐ │
-│  │   Discovery  │   │   Capture    │   │   Session Manager   │ │
-│  │  (DNS-SD /   │   │ (ScreenCap-  │   │  (WFD state machine │ │
-│  │   mDNS)      │   │  tureKit +   │   │   RTSP signaling)   │ │
-│  └──────┬───────┘   │  AVAudio)    │   └──────────┬──────────┘ │
-│         │           └──────┬───────┘              │            │
-│         │                  │                      │            │
-│         ▼                  ▼                      ▼            │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    Encoder Pipeline                      │  │
-│  │   VideoToolbox H.264  +  AAC (AudioToolbox)              │  │
-│  └──────────────────────────────────┬───────────────────────┘  │
-│                                     │                           │
-│                                     ▼                           │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                   RTP/SRTP Sender                        │  │
-│  │   packetize → SRTP encrypt → UDP send                    │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              │ UDP (port negotiated via RTSP)
-                              ▼
-               Microsoft Wireless Display Adapter
-               (or any Miracast-over-infrastructure receiver)
+Mac (source)                                   Adapter (sink)
+  │  mDNS: <name>._display._tcp → port 7250, TXT container_id
+  │
+  │  listen TCP 7236 (RTSP server)
+  │── TCP connect :7250 ─────────────────────────▶│
+  │── MICE SOURCE_READY {name, rtsp_port, id} ──▶│
+  │◀──────────────── TCP connect :7236 ───────────│   sink connects *to us*
+  │── M1 OPTIONS * (Require: org.wfa.wfd1.0) ───▶│
+  │◀──────────────────────── M2 OPTIONS * ───────│
+  │── M3 GET_PARAMETER (sink capabilities) ─────▶│
+  │── M4 SET_PARAMETER (chosen format, URL) ────▶│
+  │── M5 SET_PARAMETER wfd_trigger_method: SETUP▶│
+  │◀──────────────── M6 SETUP (client_port) ─────│
+  │◀──────────────── M7 PLAY ────────────────────│
+  │══ RTP PT33: MPEG-2 TS (H.264 CBP + AAC) ════▶│   UDP
+  │── M16 GET_PARAMETER keep-alive every 25 s ──▶│
+  │◀──────── SET_PARAMETER wfd_idr_request ──────│   → force keyframe
+  │── M5 trigger TEARDOWN / ◀── M8 TEARDOWN ─────│
+  │── MICE STOP_PROJECTION ─────────────────────▶│
 ```
 
----
+Byte-level details, PIDs and timing are documented in the source files and the README.
 
-## Components
+## Build phases
 
-### 1. Discovery (`Sources/Discovery/`)
+### Phase 1: Discovery + signalling ✅
+- [x] `DeviceBrowser`: `_display._tcp` + TXT `container_id`, resolved without connecting to 7250
+- [x] `MICEMessage`/`MICEClient`: SOURCE_READY, STOP_PROJECTION, UTF-16LE+BOM friendly name, stable 16-byte source ID
+- [x] `WFDSession`: Mac as RTSP server, source-driven M1–M8, M16 keep-alive, PAUSE/PLAY, IDR requests, timeouts with diagnostics
+- [x] `WFDNegotiation`: parse sink `wfd_video_formats`/`wfd_audio_codecs`/`wfd_client_rtp_ports`; choose 1080p30 → 720p30 → 640x480p60 by bitmap and level
 
-**Goal:** Find Miracast receivers on the local network.
+### Phase 2: Capture + encoding ✅
+- [x] ScreenCaptureKit video + system audio, excluding Mira's own windows
+- [x] Constant-rate frame pump (static screens keep PCR and the decoder fed), PTS on an exact 1/fps grid
+- [x] VideoToolbox H.264 Baseline at the negotiated level, CBP flags in SPS, IDR every 2 s or on request
+- [x] AAC-LC 48 kHz stereo with ADTS
+- [x] Test pattern + sync beep source (`--test-pattern`)
 
-- Use `Network.framework` DNS-SD (`NWBrowser`) to browse `_miracast._tcp` and `_wfd._tcp` services.
-- Fall back to raw mDNS UDP on port 5353 if needed (some adapters use non-standard service types).
-- Parse TXT records: device name, model, supported WFD spec version.
-- Emit a `MiracastDevice` struct: `{ name, ipAddress, port (default 7236), wfdVersion }`.
-- UI: show discovered devices in a menu bar popover list, refresh every 5s.
+### Phase 3: Transport ✅
+- [x] MPEG-2 TS muxer (WFD PIDs, PAT/PMT every 100 ms, PCR on video, AUD per access unit)
+- [x] RTP payload type 33, 7 TS packets per datagram, RTCP SR when the sink gives an RTCP port
 
-**Key references:**
-- WFD spec: Wi-Fi Display Technical Specification v2.1 (Wi-Fi Alliance)
-- mDNS service type: `_wfd._tcp` (some adapters) or discovered via `_display._tcp`
+### Phase 4: Stability + tooling ✅
+- [x] Auto-reconnect (3 tries) when a working session drops
+- [x] `Mira doctor`: permissions, firewall, ports, interfaces
+- [x] Full logging of every MICE/RTSP message to `~/Library/Logs/Mira/mira.log`, `--dump-ts`
+- [x] `tools/mock_sink.py` + `tools/e2e.sh`: scripted sink with stream validation, plus ffmpeg decode check
+- [x] Unit tests: MICE bytes, RTSP framing, negotiation, TS mux (incl. CC regression), RTP, ADTS, AAC timing
 
----
+### Phase 5: UI ✅
+- [x] Menu bar popover: discovered displays, connect by IP, resolution/bitrate/audio settings, status/errors, open log
 
-### 2. WFD Session / RTSP Signaling (`Sources/Session/`)
+### Phase 6: Distribution ✅
+- [x] LPCM audio fallback (mandatory WFD format) + `--audio-codec`
+- [x] Display picker, test-pattern toggle, open at login, update check, permission prompts in the app
+- [x] DNS-SD discovery that works with a VPN connected; Local Network hints
+- [x] App icon, universal (arm64 + x86_64) app bundle, DMG, zip, checksums, Homebrew cask (`scripts/package.sh`)
+- [x] GitHub Actions: CI (build, tests, 3× e2e, package) and tag-triggered releases with optional Developer ID signing + notarization
+- [x] MIT license, CHANGELOG, hardware-report issue template, `make release`
 
-**Goal:** Implement the Wi-Fi Display RTSP handshake to establish a mirroring session.
+### Phase 7: Hardware validation ⏳ ← next
+- [ ] Join the 4K adapter to Wi-Fi (Windows app) and run the README test-day checklist
+- [ ] Fix whatever the real adapter disagrees with (send `mira.log`)
+- [ ] Measure latency; tune the default buffer and bitrate
+- [ ] Developer ID certificate → notarized releases (add the repository secrets)
 
-Miracast uses a custom RTSP dialect (WFD). The full handshake over infrastructure:
+### Later / maybe
+- [ ] MICE DTLS stream encryption + PIN pairing (only if adapters require it)
+- [ ] Extended desktop via virtual display
+- [ ] UIBC input back-channel
+- [ ] Adaptive bitrate from RTCP receiver reports
 
-```
-Mac (Source)                          Adapter (Sink)
-     │                                      │
-     │──── TCP connect → port 7236 ────────▶│
-     │                                      │
-     │◀─── OPTIONS * RTSP/1.0 ─────────────│  (sink initiates)
-     │──── 200 OK, Public: OPTIONS, ... ──▶│
-     │                                      │
-     │◀─── GET_PARAMETER rtsp://... ───────│  (sink requests caps)
-     │     wfd-audio-codecs                 │
-     │     wfd-video-formats                │
-     │     wfd-client-rtp-ports             │
-     │──── 200 OK  ─────────────────────── │  (source responds with caps)
-     │     wfd-audio-codecs: AAC 00000001   │
-     │     wfd-video-formats: ...           │
-     │     wfd-client-rtp-ports: RTP/AVP/  │
-     │       UDP;unicast;1990 0 mode=play   │
-     │                                      │
-     │──── SET_PARAMETER rtsp://... ───────▶│  (source triggers)
-     │     wfd-trigger-method: SETUP        │
-     │◀─── 200 OK ─────────────────────────│
-     │                                      │
-     │◀─── SETUP rtsp://.../streamid=0 ───│
-     │──── 200 OK, Session: <id> ──────────▶│
-     │                                      │
-     │◀─── PLAY rtsp://... ────────────────│
-     │──── 200 OK ─────────────────────────▶│
-     │                                      │
-     │════ RTP video stream (UDP) ══════════▶│
-     │════ RTP audio stream (UDP) ══════════▶│
-     │                                      │
-     │  (keepalive every 30s via GET_PARAMETER / SET_PARAMETER)
-```
-
-**Implementation:**
-- Plain TCP socket (port 7236), line-delimited RTSP/1.0 text protocol.
-- Parse/generate WFD capability headers (`wfd-video-formats`, `wfd-audio-codecs`).
-- State machine: `idle → connecting → negotiating → streaming → teardown`.
-- Handle `wfd-uibc-capability` (user input back-channel) — skip for v1.
-- Keepalive: respond to sink's periodic `GET_PARAMETER` with `200 OK`.
-- On teardown: send `TEARDOWN` and close socket.
-
-**WFD video format field (wfd-video-formats):**
-```
-native profile: CEA H264 CBP level 3.2
-  codec:    H.264
-  profile:  Constrained Baseline (CBP) or Main
-  level:    3.1 (720p30), 3.2 (1080p30)
-  latency:  0
-  min-slice-size: 0
-  slice-enc-params: 0
-  frame-rate: 30fps
-  resolution: 1280x720 or 1920x1080
-```
-
----
-
-### 3. Screen Capture (`Sources/Capture/`)
-
-**Goal:** Grab the display as a stream of raw pixel buffers at 30fps.
-
-- Use **ScreenCaptureKit** (`SCStream`) — available macOS 12.3+.
-- Request `SCStreamConfiguration`: 1280×720 (or 1920×1080), 30fps, `pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`.
-- Handle permission prompt (`SCShareableContent.getWithCompletionHandler`).
-- Output: `CMSampleBuffer` frames passed directly to the encoder.
-- For audio: `SCStream` can also capture system audio — use `capturesAudio = true` on `SCStreamConfiguration`, which eliminates needing a loopback driver.
-
-**Note:** On macOS < 12.3, fall back to `CGDisplayStream` (deprecated but functional).
-
----
-
-### 4. H.264 Encoder (`Sources/Encoder/`)
-
-**Goal:** Encode raw frames to H.264 Annex B NAL units in real time.
-
-- Use **VideoToolbox** `VTCompressionSession`.
-- Settings for Miracast compatibility:
-  ```
-  kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_Baseline_3_2
-  kVTCompressionPropertyKey_RealTime: true
-  kVTCompressionPropertyKey_AllowFrameReordering: false   // no B-frames
-  kVTCompressionPropertyKey_MaxKeyFrameInterval: 90       // keyframe every 3s at 30fps
-  kVTCompressionPropertyKey_ExpectedFrameRate: 30
-  kVTCompressionPropertyKey_AverageBitRate: 4_000_000     // 4 Mbps (adjustable)
-  kVTCompressionPropertyKey_DataRateLimits: [500_000, 1]  // 500KB per second burst
-  ```
-- Output: `CMSampleBuffer` with H.264 NAL units → convert to Annex B (replace length prefixes with `00 00 00 01` start codes) → pass to RTP packetizer.
-
-**Audio:**
-- Use **AudioToolbox** `AudioConverter` to encode PCM → AAC-LC.
-- Sample rate: 44100 Hz, stereo, 128 kbps.
-- Alternatively: LPCM (uncompressed) for lower latency, which Miracast also supports.
-
----
-
-### 5. RTP Packetizer & SRTP Sender (`Sources/RTP/`)
-
-**Goal:** Packetize encoded H.264/AAC into RTP packets and send over UDP with optional SRTP encryption.
-
-**RTP (RFC 3550):**
-- Video: payload type 33 (MP2T) or 97 (H264 dynamic), SSRC randomly chosen.
-- H.264 packetization: RFC 6184 — single NAL unit packets for small NALUs, FU-A fragmentation for NALUs > MTU (1460 bytes).
-- Timestamp: 90kHz clock for video, 44100Hz for audio.
-- Sequence numbers: monotonically increasing per stream.
-
-**SRTP (RFC 3711):**
-- Key exchange: negotiated in RTSP SETUP via `Transport` header.
-- Profile: `AES_128_CM_HMAC_SHA1_80` (most compatible).
-- Use Apple's **Security.framework** or a lightweight C SRTP lib (libsrtp2).
-- If the adapter doesn't require encryption (Microsoft adapter often doesn't in infrastructure mode), skip SRTP for v1.
-
-**RTCP:**
-- Send sender reports (SR) every second.
-- Handle receiver reports (RR) for basic feedback.
-- No complex adaptive bitrate for v1.
-
----
-
-### 6. UI (`Sources/UI/`)
-
-**Goal:** Minimal menu bar app.
-
-- `NSStatusItem` in the menu bar with a display icon.
-- Click → popover showing discovered devices.
-- Each device: name + "Mirror" button.
-- While mirroring: show a "Stop" button + simple stats (bitrate, fps).
-- Preferences: resolution (720p / 1080p), bitrate slider (2–8 Mbps), audio on/off.
-- No Dock icon (`LSUIElement = YES` in Info.plist).
-
----
-
-## Project Structure
-
-```
-mira/
-├── GOAL.md
-├── README.md
-├── .gitignore
-├── Mira.xcodeproj/
-├── Sources/
-│   ├── App/
-│   │   ├── AppDelegate.swift
-│   │   ├── StatusBarController.swift
-│   │   └── Info.plist
-│   ├── Discovery/
-│   │   ├── DeviceBrowser.swift       # NWBrowser DNS-SD
-│   │   └── MiracastDevice.swift      # device model
-│   ├── Session/
-│   │   ├── WFDSession.swift          # RTSP TCP socket + state machine
-│   │   ├── RTSPMessage.swift         # parse/generate RTSP messages
-│   │   └── WFDCapabilities.swift     # encode/decode WFD header values
-│   ├── Capture/
-│   │   ├── ScreenCapturer.swift      # SCStream wrapper
-│   │   └── AudioCapturer.swift       # SCStream audio output
-│   ├── Encoder/
-│   │   ├── H264Encoder.swift         # VTCompressionSession wrapper
-│   │   ├── AACEncoder.swift          # AudioConverter wrapper
-│   │   └── AnnexBConverter.swift     # AVCC → Annex B NAL conversion
-│   ├── RTP/
-│   │   ├── RTPPacketizer.swift       # H264 RFC 6184 packetization
-│   │   ├── RTPSender.swift           # UDP socket sender
-│   │   ├── SRTPContext.swift         # SRTP encrypt (libsrtp2 or Security.framework)
-│   │   └── RTCPSender.swift          # sender reports
-│   └── UI/
-│       ├── DeviceListViewController.swift
-│       ├── MirroringStatusView.swift
-│       └── PreferencesViewController.swift
-├── Tests/
-│   ├── RTSPParserTests.swift
-│   ├── WFDCapabilityTests.swift
-│   ├── RTPPacketizerTests.swift
-│   └── H264EncoderTests.swift
-└── vendor/
-    └── libsrtp2/                     # optional: C library for SRTP
-```
-
----
-
-## Build Phases
-
-### Phase 1 — Discovery + RTSP Handshake ✅ DONE
-- [x] Swift Package (macOS 13+, Swift 5.9, AppKit, no SwiftUI)
-- [x] `DeviceBrowser`: `NWBrowser` mDNS scanning `_wfd._tcp`, `_display._tcp`, `_miracast._tcp`
-- [x] `RTSPMessage`: parse/serialize RTSP/1.0 with Content-Length body framing
-- [x] `WFDSession`: full state machine OPTIONS→GET_PARAMETER→SET_PARAMETER→SETUP→PLAY + keepalive
-- [ ] Live test: confirm handshake with actual Microsoft adapter
-
-### Phase 2 — Screen Capture + H.264 Encoding ✅ DONE
-- [x] `ScreenCapturer`: `SCStream` main display at 1280×720 @30fps, YpCbCr420
-- [x] `H264Encoder`: `VTCompressionSession` Baseline 3.2, no B-frames, 4 Mbps, real-time
-- [x] `AnnexBConverter`: AVCC → NAL units; SPS+PPS extracted from format description on keyframes
-- [ ] AAC audio (deferred — video-only for v1, `wfd_audio_codecs: none`)
-
-### Phase 3 — RTP Streaming ✅ DONE
-- [x] `RTPPacketizer`: RFC 6184, single NAL unit + FU-A fragmentation, 90kHz timestamps
-- [x] `RTPSender`: `NWConnection` UDP to sink, configurable local port
-- [x] `RTCPSender`: Sender Reports every 1s with NTP wall-clock
-- [x] Full pipeline wired: capture → encode → packetize → UDP
-- [ ] Live test: picture on Miracast sink
-
-### Phase 4 — Stability ✅ DONE
-- [x] `WFDSession` keepalive: responds to sink's periodic `GET_PARAMETER`
-- [x] Own keepalive: source sends `GET_PARAMETER` every 30s
-- [x] Clean teardown: `TEARDOWN` + `connection.cancel()`
-- [x] Auto-reconnect: retries session after 5s on error
-- [ ] SRTP: not required by MS adapter in infrastructure mode (add if needed)
-
-### Phase 5 — UI ✅ DONE
-- [x] `StatusBarController`: `NSStatusItem` + `NSPopover`, icon changes when streaming
-- [x] `DeviceListViewController`: device table with Mirror/Stop buttons + live fps/kbps
-- [x] `AppDelegate`: wires controller + stats timer into NSApplication lifecycle
-- [x] Dual mode: menu bar app (default) or headless CLI (`swift run Mira [ip]`)
-- [ ] Preferences panel (resolution, bitrate sliders) — future
-
-### Phase 6 — Release
-- [ ] Notarize for distribution outside App Store
-- [ ] README with adapter setup instructions
-- [ ] GitHub release (eliasfrehner/mira)
-
----
-
-## Key Technical References
-
-- **Wi-Fi Display Spec v2.1** — Wi-Fi Alliance (governs WFD RTSP dialect + capability format)
-- **RFC 3550** — RTP: A Transport Protocol for Real-Time Applications
-- **RFC 6184** — RTP Payload Format for H.264 Video (FU-A packetization)
-- **RFC 3711** — SRTP
-- **Apple VideoToolbox** — `VTCompressionSession` docs
-- **ScreenCaptureKit** — `SCStream`, `SCStreamConfiguration`
-- **libsrtp2** — https://github.com/cisco/libsrtp (MIT license)
-- **AirParrot binary analysis** — confirmed RTSP flow, SDP format, mDNS discovery strategy, H.264 encoder settings
-
----
-
-## Constraints & Decisions
+## Constraints & decisions
 
 | Decision | Rationale |
 |---|---|
-| Infrastructure mode only (no Wi-Fi Direct) | macOS has no Wi-Fi Direct driver; infrastructure mode works over regular Wi-Fi |
-| ScreenCaptureKit (macOS 12.3+ minimum) | Eliminates need for kernel extension or `CGDisplayStream` |
-| VideoToolbox H.264 (not x264) | Hardware-accelerated, low-latency, built into macOS |
-| No B-frames, Baseline profile | Required by Miracast spec for low-latency display |
-| Menu bar app, no Dock icon | Mirroring is a background utility, not a document app |
-| Swift + C for SRTP | Swift for app logic, C (libsrtp2) for crypto correctness |
-| Skip UIBC (input back-channel) | v1 scope: display only, no touch/keyboard feedback from sink |
+| MS-MICE / infrastructure mode only | macOS has no Wi-Fi Direct; MICE needs only TCP/UDP |
+| Mac is the RTSP server | Required by Wi-Fi Display (source = server) and MS-MICE (sink connects back) |
+| MPEG-2 TS over RTP (PT 33) | Mandatory WFD media encapsulation; raw RFC 6184 H.264 is not understood by sinks |
+| H.264 Constrained Baseline, no B-frames | Mandatory for every WFD sink; lowest latency |
+| AAC 48 kHz stereo, else LPCM | AAC is compact; LPCM (private stream 1, Android layout) is the format every WFD sink must accept |
+| 200 ms PTS delay with AAC, 150 ms LPCM, 120 ms video-only | AAC adds ~65 ms lookahead; measured headroom ≥110 ms locally |
+| Re-encode the last frame on static screens | Keeps PCR flowing and avoids sink underflow |
+| Swift only, no dependencies | Everything needed is in VideoToolbox/AudioToolbox/Network/ScreenCaptureKit |
+
+[MS-MICE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mice/940d808c-97f8-418e-a8a9-c471dc0d21bb

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: swift --version && sw_vers
+
+      - name: Build
+        run: swift build
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Install ffmpeg (decode check in e2e)
+        run: brew install --quiet ffmpeg
+
+      - name: End-to-end against mock sink
+        run: |
+          E2E_OUT="$RUNNER_TEMP/e2e-aac"  tools/e2e.sh
+          E2E_OUT="$RUNNER_TEMP/e2e-lpcm" E2E_DURATION=5 tools/e2e.sh --audio lpcm
+          E2E_OUT="$RUNNER_TEMP/e2e-720"  E2E_DURATION=5 tools/e2e.sh --no-audio --no-m2 \
+            "--video-formats=00 00 01 02 000000a1 00000000 00000000 00 0000 0000 00 none none"
+
+      - name: Package (ad-hoc signed)
+        run: scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mira-${{ github.sha }}
+          path: dist/
+          retention-days: 14

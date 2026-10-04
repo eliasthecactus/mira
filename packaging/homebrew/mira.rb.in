@@ -1,0 +1,22 @@
+# Homebrew cask for Mira. Generated per release by scripts/package.sh (dist/mira.rb).
+# To publish: copy into a tap repo (e.g. github.com/eliasthecactus/homebrew-tap/Casks/mira.rb),
+# then users run `brew install --cask eliasthecactus/tap/mira`.
+cask "mira" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "https://github.com/eliasthecactus/mira/releases/download/v#{version}/Mira-#{version}.dmg"
+  name "Mira"
+  desc "Mirror your Mac's screen to Miracast displays (Microsoft 4K Wireless Display Adapter)"
+  homepage "https://github.com/eliasthecactus/mira"
+
+  depends_on macos: ">= :ventura"
+
+  app "Mira.app"
+  binary "#{appdir}/Mira.app/Contents/MacOS/Mira", target: "mira"
+
+  zap trash: [
+    "~/Library/Logs/Mira",
+    "~/Library/Preferences/io.github.eliasthecactus.mira.plist",
+  ]
+end

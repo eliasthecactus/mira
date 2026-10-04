@@ -1,0 +1,78 @@
+name: Release
+
+# Push a tag like v0.2.0 or v0.3.0-beta.1 (`make release VERSION=…` does the bump + tag).
+# Tags with a suffix (-beta.1, -rc.1) become GitHub pre-releases.
+#
+# Optional repository secrets for a signed + notarized build (otherwise ad-hoc signed):
+#   MACOS_CERTIFICATE      base64 of a "Developer ID Application" .p12
+#   MACOS_CERTIFICATE_PWD  its password
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool (app-specific password)
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PLIST=$(/usr/libexec/PlistBuddy -c 'Print :MiraVersion' Support/Info.plist)
+          if [ "$TAG" != "$PLIST" ]; then
+            echo "::error::Tag $TAG does not match MiraVersion $PLIST in Support/Info.plist"; exit 1
+          fi
+          grep -q "^## \[$TAG\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $TAG"; exit 1; }
+
+      - name: Unit tests
+        run: swift test
+
+      - name: Import Developer ID certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          KC="$RUNNER_TEMP/build.keychain-db"; KC_PW=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          ID=$(security find-identity -v -p codesigning "$KC" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
+          echo "SIGN_ID=$ID" >> "$GITHUB_ENV"
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign, package
+        run: BUILD_NUMBER=${{ github.run_number }} scripts/package.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '/^## \[/{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md > notes.md
+          if [ -n "${SIGN_ID:-}" ]; then INSTALL=scripts/release-notes-signed.md; else INSTALL=scripts/release-notes-unsigned.md; fi
+          { echo; cat "$INSTALL"; echo; echo '**SHA-256**'; echo '```'; cat dist/SHA256SUMS.txt; echo '```'; } >> notes.md
+          cat notes.md
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PRE=""; [[ "$VERSION" == *-* ]] && PRE="--prerelease"
+          gh release create "$GITHUB_REF_NAME" $PRE --title "Mira $VERSION" --notes-file notes.md \
+            "dist/Mira-$VERSION.dmg" "dist/Mira-$VERSION.zip" dist/SHA256SUMS.txt dist/mira.rb
