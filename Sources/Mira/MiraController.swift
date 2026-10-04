@@ -1,170 +1,275 @@
 import Foundation
-import CoreMedia
-import VideoToolbox
+import AppKit
 
 // Stats snapshot for the UI
 struct MiraStats {
     var isStreaming: Bool = false
     var device: MiracastDevice? = nil
+    var resolution: String = ""
     var fps: Double = 0
     var kbps: Int = 0
 }
 
-// Orchestrates the full pipeline:
-// Discovery → WFD session → Capture → Encode → Packetize → Send
-final class MiraController {
+// Orchestrates one projection:
+//   1. listen for RTSP on 7236          (WFDSession)
+//   2. SOURCE_READY → sink:7250          (MICEClient)
+//   3. sink connects in, M1…M7           (WFDSession)
+//   4. stream MPEG-TS/RTP                (MediaPipeline)
+final class MiraController: @unchecked Sendable {   // state is confined to `queue`
 
-    // UI callbacks
-    var onDeviceDiscovered: (([MiracastDevice]) -> Void)?
+    struct Options {
+        var prefs = StreamPreferences()
+        var testPattern = false
+        var displayID: CGDirectDisplayID? = nil      // nil = main display
+        var dumpTS: URL? = nil
+        var rtspPort: UInt16 = 7236
+        var localRTPPort: UInt16 = 19000
+        // Sink buffer. nil = auto: 200 ms with AAC (encoder lookahead + capture
+        // latency need the room), 150 ms with LPCM, 120 ms video-only.
+        var ptsDelay: Double? = nil
+        var friendlyName: String = Host.current().localizedName ?? "Mac"
+        var autoReconnect = true
+    }
 
+    enum Status: Equatable {
+        case idle
+        case connecting(MiracastDevice)
+        case streaming(MiracastDevice, String)
+        case failed(String)
+    }
+
+    var onDevicesChanged: (([MiracastDevice]) -> Void)?
+    var onStatusChanged: ((Status) -> Void)?
+
+    var options: Options
+    private(set) var status: Status = .idle { didSet { if status != oldValue { onStatusChanged?(status) } } }
+
+    private let queue = DispatchQueue(label: "mira.control")
     private let browser = DeviceBrowser()
+    private var devices: [MiracastDevice] = []
+    private var mice: MICEClient?
     private var session: WFDSession?
-    private var capturer: ScreenCapturer?
-    private let encoder = H264Encoder(config: .init(width: 1280, height: 720, fps: 30, bitrate: 4_000_000))
-    private let ssrc = UInt32.random(in: 0...UInt32.max)
-    private lazy var packetizer = RTPPacketizer(ssrc: ssrc)
-    private let rtpSender = RTPSender(localPort: WFDCapabilities.rtpVideoPort)
-    private lazy var rtcpSender = RTCPSender(ssrc: ssrc)
-
-    private var isStreaming = false
-    private var startPTS: CMTime = .invalid
-    private var currentRTPTimestamp: UInt32 = 0
+    private var pipeline: MediaPipeline?
     private var activeDevice: MiracastDevice?
-    private var discoveredDevices: [MiracastDevice] = []
+    private var userStopped = false
+    private var reconnectAttempts = 0
+    private var generation = 0
 
-    // Stats (read from UI timer)
-    private var frameCount: UInt64 = 0
-    private var lastStatsTime: Date = Date()
-    private var lastFrameCount: UInt64 = 0
+    // Stats rate tracking
+    private var lastStatsTime = Date()
+    private var lastFrames: UInt64 = 0
+    private var lastBytes: UInt64 = 0
 
-    var currentStats: MiraStats {
-        let elapsed = Date().timeIntervalSince(lastStatsTime)
-        let framesElapsed = Double(frameCount - lastFrameCount)
-        let fps = elapsed > 0 ? framesElapsed / elapsed : 0
-        let kbps = Int(Double(rtpSender.bytesSent) / max(elapsed, 1) * 8 / 1000)
-        return MiraStats(isStreaming: isStreaming, device: activeDevice, fps: fps, kbps: kbps)
+    init(options: Options = Options()) {
+        self.options = options
     }
 
-    // MARK: - Entry point (auto-browse mode)
-
-    func run(connectDirectlyTo ip: String? = nil) async {
-        setupEncoder()
-
-        if let ip = ip {
-            let device = MiracastDevice(name: "Direct", ipAddress: ip)
-            print("[Mira] Direct connect → \(ip)")
-            startSession(for: device)
-        } else {
-            browser.onDeviceFound = { [weak self] device in
-                guard let self else { return }
-                if !self.discoveredDevices.contains(where: { $0.ipAddress == device.ipAddress }) {
-                    self.discoveredDevices.append(device)
-                    self.onDeviceDiscovered?(self.discoveredDevices)
-                    // Auto-connect in CLI mode (no UI)
-                    if self.onDeviceDiscovered == nil, self.session == nil {
-                        self.browser.stop()
-                        self.startSession(for: device)
-                    }
-                }
-            }
-            print("[Mira] Browsing for Miracast devices...")
-            browser.start()
+    // Stable per-Mac 16-byte MICE Source ID.
+    static let sourceID: Data = {
+        let key = "MiraSourceID"
+        if let s = UserDefaults.standard.string(forKey: key), let uuid = UUID(uuidString: s) {
+            return withUnsafeBytes(of: uuid.uuid) { Data($0) }
         }
+        let uuid = UUID()
+        UserDefaults.standard.set(uuid.uuidString, forKey: key)
+        return withUnsafeBytes(of: uuid.uuid) { Data($0) }
+    }()
+
+    // MARK: - Discovery
+
+    func startDiscovery() {
+        browser.onDeviceFound = { [weak self] device in
+            guard let self else { return }
+            self.queue.async {
+                self.devices.removeAll { $0.name == device.name }
+                self.devices.append(device)
+                self.devices.sort { $0.name < $1.name }
+                self.onDevicesChanged?(self.devices)
+            }
+        }
+        browser.onDeviceLost = { [weak self] name in
+            guard let self else { return }
+            self.queue.async {
+                self.devices.removeAll { $0.name == name }
+                self.onDevicesChanged?(self.devices)
+            }
+        }
+        browser.start()
     }
 
-    // UI-triggered connect to a specific device
-    func connectTo(device: MiracastDevice) async {
-        setupEncoder()
-        startSession(for: device)
+    func stopDiscovery() { browser.stop() }
+
+    // MARK: - Projection
+
+    func connect(to device: MiracastDevice) {
+        queue.async {
+            self.tearDownCurrent(reason: "switching device")
+            self.userStopped = false
+            self.reconnectAttempts = 0
+            self.start(device)
+        }
     }
 
     func stop() {
-        isStreaming = false
-        activeDevice = nil
-        capturer?.stop()
-        capturer = nil
-        rtpSender.disconnect()
-        rtcpSender.stop()
-        session?.disconnect()
-        session = nil
-        startPTS = .invalid
+        queue.sync {
+            userStopped = true
+            tearDownCurrent(reason: "stopped by user")
+            status = .idle
+        }
     }
 
-    // MARK: - Session
+    // Blocks until the sink has been told to stop (used on quit).
+    func stopAndWait(timeout: TimeInterval = 2) {
+        stop()
+        Thread.sleep(forTimeInterval: min(timeout, 0.5))
+    }
 
-    private func startSession(for device: MiracastDevice) {
-        session?.disconnect()
-        let s = WFDSession(device: device)
-        s.onReady = { [weak self] ip, sinkPort in
-            self?.activeDevice = device
-            self?.startStreaming(sinkIP: ip, sinkRTPPort: sinkPort)
+    var currentStats: MiraStats {
+        queue.sync {
+            guard case .streaming(let device, let res) = status, let pipeline else { return MiraStats() }
+            let s = pipeline.stats
+            let now = Date()
+            let dt = max(now.timeIntervalSince(lastStatsTime), 0.001)
+            let fps = Double(s.framesEncoded &- lastFrames) / dt
+            let kbps = Int(Double(s.bytesSent &- lastBytes) * 8 / dt / 1000)
+            lastStatsTime = now; lastFrames = s.framesEncoded; lastBytes = s.bytesSent
+            return MiraStats(isStreaming: true, device: device, resolution: res, fps: fps, kbps: kbps)
         }
-        s.onError = { [weak self] err in
-            print("[Mira] Session error: \(err)")
-            // Reconnect after 5s
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
-                guard let self, self.session != nil else { return }
-                print("[Mira] Reconnecting to \(device)...")
-                self.startSession(for: device)
-            }
+    }
+
+    static func defaultDelay(_ audio: WFDAudioCodec?) -> Double {
+        switch audio?.format {
+        case "AAC":  return 0.2
+        case "LPCM": return 0.15
+        default:     return 0.12
         }
+    }
+
+    // MARK: - Internals (queue only)
+
+    private func start(_ device: MiracastDevice) {
+        generation += 1
+        let gen = generation
+        activeDevice = device
+        status = .connecting(device)
+        Log.info("Mira", "Connecting to \(device) as \"\(options.friendlyName)\"")
+
+        let s = WFDSession(rtspPort: options.rtspPort, serverRTPPort: options.localRTPPort,
+                           prefs: options.prefs, queue: queue)
         session = s
-        s.connect()
-    }
 
-    // MARK: - Streaming pipeline
-
-    private func startStreaming(sinkIP: String, sinkRTPPort: UInt16) {
-        rtpSender.connect(toHost: sinkIP, port: sinkRTPPort)
-        rtcpSender.connect(toHost: sinkIP, rtcpPort: sinkRTPPort + 1)
-        rtcpSender.startReports { [weak self] in self?.currentRTPTimestamp ?? 0 }
-        isStreaming = true
-        print("[Mira] Streaming → \(sinkIP):\(sinkRTPPort)")
-        Task { [weak self] in
-            do { try await self?.startCapture() }
-            catch { print("[Mira] Capture error: \(error)") }
+        s.onPlay = { [weak self] format, sinkIP, rtpPort, rtcpPort in
+            guard let self, gen == self.generation else { return }
+            self.startPipeline(device: device, format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort, gen: gen)
         }
-    }
-
-    private func startCapture() async throws {
-        let cap = ScreenCapturer(config: .init(width: 1280, height: 720, fps: 30))
-        cap.onFrame = { [weak self] pixelBuffer, pts in
-            self?.handleFrame(pixelBuffer: pixelBuffer, pts: pts)
+        s.onIDRRequest = { [weak self] in self?.pipeline?.forceKeyframe() }
+        s.onPause = { [weak self] in self?.pipeline?.setPaused(true) }
+        s.onResume = { [weak self] in self?.pipeline?.setPaused(false) }
+        s.onClosed = { [weak self] error in
+            guard let self, gen == self.generation else { return }
+            self.sessionEnded(device: device, error: error)
         }
-        capturer = cap
-        try await cap.start()
-    }
 
-    // MARK: - Encode & send
-
-    private func setupEncoder() {
-        guard encoder.onEncoded == nil else { return }  // only once
-        encoder.onEncoded = { [weak self] sampleBuffer, isKeyframe in
-            guard let self, self.isStreaming else { return }
-
-            var nalus: [Data] = []
-            if isKeyframe, let fmt = CMSampleBufferGetFormatDescription(sampleBuffer) {
-                nalus.append(contentsOf: AnnexBConverter.extractParameterSets(from: fmt))
+        s.listen { [weak self] in
+            guard let self, gen == self.generation else { return }
+            let m = MICEClient(host: device.ipAddress, port: device.port, friendlyName: self.options.friendlyName,
+                               sourceID: Self.sourceID, queue: self.queue)
+            m.onConnected = { [weak m, weak self] in
+                guard let self else { return }
+                m?.sendSourceReady(rtspPort: self.options.rtspPort)
             }
-            nalus.append(contentsOf: AnnexBConverter.extractNALUs(from: sampleBuffer))
-            guard !nalus.isEmpty else { return }
-
-            let pts90k = self.currentRTPTimestamp
-            let packets = self.packetizer.packetize(nalus: nalus, pts90k: pts90k, isKeyframe: isKeyframe)
-            let totalBytes = UInt32(packets.reduce(0) { $0 + $1.count })
-            self.rtpSender.send(packets)
-            self.rtcpSender.record(packets: UInt32(packets.count), octets: totalBytes)
-            self.frameCount += 1
+            m.onStopProjection = { [weak self] in
+                guard let self, gen == self.generation else { return }
+                Log.info("Mira", "Sink ended the projection")
+                self.session?.teardown()
+            }
+            m.onError = { [weak self] err in
+                guard let self, gen == self.generation else { return }
+                self.sessionEnded(device: device, error: MiraError.miceFailed(device, err))
+            }
+            self.mice = m
+            m.connect()
         }
-        do { try encoder.start() }
-        catch { print("[Mira] Encoder start failed: \(error)") }
     }
 
-    private func handleFrame(pixelBuffer: CVPixelBuffer, pts: CMTime) {
-        guard isStreaming else { return }
-        if startPTS == .invalid { startPTS = pts }
-        let elapsed = CMTimeSubtract(pts, startPTS)
-        currentRTPTimestamp = UInt32(CMTimeGetSeconds(elapsed) * 90000)
-        encoder.encode(pixelBuffer, pts: pts, duration: CMTime(value: 1, timescale: 30))
+    private func startPipeline(device: MiracastDevice, format: WFDNegotiatedFormat, sinkIP: String,
+                               rtpPort: UInt16, rtcpPort: UInt16?, gen: Int) {
+        let cfg = MediaPipeline.Config(format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort,
+                                       localRTPPort: options.localRTPPort, bitrate: options.prefs.bitrate,
+                                       fps: format.resolution.fps, testPattern: options.testPattern,
+                                       displayID: options.displayID,
+                                       dumpTS: options.dumpTS,
+                                       ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio))
+        let p = MediaPipeline(config: cfg)
+        p.onFatalError = { [weak self] err in
+            guard let self else { return }
+            self.queue.async {
+                guard gen == self.generation else { return }
+                self.sessionEnded(device: device, error: err)
+            }
+        }
+        pipeline = p
+        Task {
+            do {
+                try await p.start()
+                self.queue.async {
+                    guard gen == self.generation else { return }
+                    self.reconnectAttempts = 0
+                    self.status = .streaming(device, format.resolution.description)
+                }
+            } catch {
+                self.queue.async {
+                    guard gen == self.generation else { return }
+                    self.sessionEnded(device: device, error: error)
+                }
+            }
+        }
+    }
+
+    private func sessionEnded(device: MiracastDevice, error: Error?) {
+        let wasStreaming: Bool
+        if case .streaming = status { wasStreaming = true } else { wasStreaming = false }
+        tearDownCurrent(reason: error == nil ? "session ended" : "error")
+
+        guard let error else {
+            status = .idle
+            return
+        }
+        Log.error("Mira", error.localizedDescription)
+
+        // Only retry sessions that were working; a failure during setup would just repeat.
+        if wasStreaming, options.autoReconnect, !userStopped, reconnectAttempts < 3 {
+            reconnectAttempts += 1
+            Log.info("Mira", "Reconnecting in 3s (attempt \(reconnectAttempts)/3)")
+            status = .connecting(device)
+            let gen = generation
+            queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, gen == self.generation, !self.userStopped else { return }
+                self.start(device)
+            }
+        } else {
+            status = .failed(error.localizedDescription)
+        }
+    }
+
+    private func tearDownCurrent(reason: String) {
+        generation += 1
+        pipeline?.stop(); pipeline = nil
+        session?.onClosed = nil
+        session?.teardown(); session = nil
+        mice?.onError = nil
+        mice?.stop(); mice = nil
+        activeDevice = nil
+    }
+}
+
+enum MiraError: LocalizedError {
+    case miceFailed(MiracastDevice, Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .miceFailed(let d, let e):
+            return "Could not reach \(d.name) at \(d.ipAddress):\(d.port) (\(e)). Is the adapter joined to this Wi-Fi network and powered on? Is Mira allowed under System Settings → Privacy & Security → Local Network? (The original non-4K Microsoft adapter does not support Miracast over Wi-Fi at all.)"
+        }
     }
 }

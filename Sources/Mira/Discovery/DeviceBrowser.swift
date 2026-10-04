@@ -1,81 +1,186 @@
 import Foundation
-import Network
+import dnssd
 
-final class DeviceBrowser {
+// Finds Miracast-over-Infrastructure sinks. Per [MS-MICE] a sink registers
+// "<friendly name>._display._tcp.local" (SRV → port 7250) with a TXT record
+// "container_id=<GUID>". The Microsoft 4K Wireless Display Adapter only does this
+// once it has been joined to your Wi-Fi network with Microsoft's app.
+//
+// Uses the DNS-SD API directly (browse → resolve → getaddrinfo on the interface
+// the service was seen on). Network.framework's resolution follows the default
+// route, so with a VPN connected it never resolves LAN services.
+//
+// Note: if macOS Local Network access is denied for Mira, the browse simply never
+// reports anything — there is no error to detect. The UI explains this when
+// nothing turns up.
+final class DeviceBrowser: @unchecked Sendable {   // all state confined to `queue`
+    static let serviceType = "_display._tcp"
+
     var onDeviceFound: ((MiracastDevice) -> Void)?
     var onDeviceLost: ((String) -> Void)?
 
-    private var browsers: [NWBrowser] = []
-    private var resolving: [String: NWBrowser.Result] = [:]
     private let queue = DispatchQueue(label: "mira.discovery")
+    private var browseRef: DNSServiceRef?
+    private var resolutions: [ObjectIdentifier: Resolution] = [:]
 
-    // WFD service types used by different Miracast sinks
-    private let serviceTypes = ["_wfd._tcp", "_display._tcp", "_miracast._tcp"]
+    // One in-flight resolve → address lookup for a service seen on one interface.
+    private final class Resolution {
+        let name: String
+        let interfaceIndex: UInt32
+        weak var browser: DeviceBrowser?
+        var ref: DNSServiceRef?
+        var port: UInt16 = 0
+        var containerID: String?
+        var done = false
+
+        init(name: String, interfaceIndex: UInt32, browser: DeviceBrowser) {
+            self.name = name
+            self.interfaceIndex = interfaceIndex
+            self.browser = browser
+        }
+
+        func cancel() {
+            if let ref { DNSServiceRefDeallocate(ref) }
+            ref = nil
+            done = true
+        }
+    }
 
     func start() {
-        for type in serviceTypes {
-            let params = NWParameters()
-            params.includePeerToPeer = false
-            let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: params)
-            browser.browseResultsChangedHandler = { [weak self] results, changes in
-                self?.handleChanges(changes)
-            }
-            browser.stateUpdateHandler = { state in
-                switch state {
-                case .failed(let err):
-                    print("[Discovery] Browser \(type) failed: \(err)")
-                case .ready:
-                    print("[Discovery] Browsing \(type)...")
-                default:
-                    break
+        queue.async { [self] in
+            guard browseRef == nil else { return }
+            var ref: DNSServiceRef?
+            let ctx = Unmanaged.passUnretained(self).toOpaque()
+            let err = DNSServiceBrowse(&ref, 0, 0, DeviceBrowser.serviceType, nil, { _, flags, ifIndex, err, name, type, domain, ctx in
+                guard let ctx else { return }
+                let me = Unmanaged<DeviceBrowser>.fromOpaque(ctx).takeUnretainedValue()
+                guard err == kDNSServiceErr_NoError, let name, let type, let domain else {
+                    me.browseFailed(err)
+                    return
                 }
+                me.browseEvent(added: flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0, interfaceIndex: ifIndex,
+                               name: String(cString: name), type: String(cString: type), domain: String(cString: domain))
+            }, ctx)
+            guard err == kDNSServiceErr_NoError, let ref else {
+                Log.error("Discovery", "DNSServiceBrowse failed: \(err)")
+                return
             }
-            browser.start(queue: queue)
-            browsers.append(browser)
+            DNSServiceSetDispatchQueue(ref, queue)
+            browseRef = ref
+            Log.info("Discovery", "Browsing \(Self.serviceType)")
         }
     }
 
     func stop() {
-        browsers.forEach { $0.cancel() }
-        browsers.removeAll()
+        queue.async { [self] in
+            if let browseRef { DNSServiceRefDeallocate(browseRef) }
+            browseRef = nil
+            resolutions.values.forEach { $0.cancel() }
+            resolutions.removeAll()
+        }
     }
 
-    private func handleChanges(_ changes: Set<NWBrowser.Result.Change>) {
-        for change in changes {
-            switch change {
-            case .added(let result):
-                resolve(result)
-            case .removed(let result):
-                if case .service(let name, _, _, _) = result.endpoint {
-                    onDeviceLost?(name)
-                }
-            default:
-                break
+    // MARK: - Browse → resolve → address (all on `queue`)
+
+    private func browseFailed(_ err: DNSServiceErrorType) {
+        if err == kDNSServiceErr_PolicyDenied {
+            Log.error("Discovery", "macOS denied local network access. Allow Mira in System Settings → Privacy & Security → Local Network, then restart it.")
+        } else {
+            Log.error("Discovery", "Browse error \(err)")
+        }
+    }
+
+    private func browseEvent(added: Bool, interfaceIndex: UInt32, name: String, type: String, domain: String) {
+        Log.debug("Discovery", "\(added ? "+" : "-") \(name) on interface \(interfaceIndex)")
+        if isLoopback(interfaceIndex) { return }
+        guard added else {
+            Log.info("Discovery", "Lost \(name)")
+            onDeviceLost?(name)
+            return
+        }
+
+        let r = Resolution(name: name, interfaceIndex: interfaceIndex, browser: self)
+        let ctx = Unmanaged.passRetained(r).toOpaque()   // released when the resolution finishes
+        var ref: DNSServiceRef?
+        let err = DNSServiceResolve(&ref, 0, interfaceIndex, name, type, domain, { _, _, _, err, _, host, port, txtLen, txt, ctx in
+            guard let ctx else { return }
+            let r = Unmanaged<Resolution>.fromOpaque(ctx).takeUnretainedValue()
+            guard let me = r.browser else { return }
+            if err != kDNSServiceErr_NoError || host == nil {
+                me.finish(r, error: "resolve error \(err)")
+                return
+            }
+            Log.debug("Discovery", "resolved \(r.name) → \(String(cString: host!))")
+            r.port = UInt16(bigEndian: port)
+            r.containerID = DeviceBrowser.txtValue("container_id", txtLen, txt)
+            me.lookupAddress(r, host: String(cString: host!))
+        }, ctx)
+        guard err == kDNSServiceErr_NoError, let ref else {
+            Unmanaged<Resolution>.fromOpaque(ctx).release()
+            Log.warn("Discovery", "Could not resolve \(name): \(err)")
+            return
+        }
+        r.ref = ref
+        resolutions[ObjectIdentifier(r)] = r
+        DNSServiceSetDispatchQueue(ref, queue)
+        queue.asyncAfter(deadline: .now() + 6) { [weak self, weak r] in
+            guard let self, let r, !r.done else { return }
+            self.finish(r, error: "timed out")
+        }
+    }
+
+    private func lookupAddress(_ r: Resolution, host: String) {
+        if let ref = r.ref { DNSServiceRefDeallocate(ref) }
+        r.ref = nil
+        var ref: DNSServiceRef?
+        let ctx = Unmanaged.passUnretained(r).toOpaque()
+        let err = DNSServiceGetAddrInfo(&ref, 0, r.interfaceIndex, DNSServiceProtocol(kDNSServiceProtocol_IPv4), host, { _, _, _, err, _, addr, _, ctx in
+            guard let ctx else { return }
+            let r = Unmanaged<Resolution>.fromOpaque(ctx).takeUnretainedValue()
+            guard let me = r.browser, !r.done else { return }
+            guard err == kDNSServiceErr_NoError, let addr, addr.pointee.sa_family == sa_family_t(AF_INET) else {
+                me.finish(r, error: "no IPv4 address (\(err))")
+                return
+            }
+            var sin = UnsafeRawPointer(addr).assumingMemoryBound(to: sockaddr_in.self).pointee
+            var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            inet_ntop(AF_INET, &sin.sin_addr, &buf, socklen_t(buf.count))
+            let device = MiracastDevice(name: r.name, ipAddress: String(cString: buf), port: r.port,
+                                        containerID: r.containerID)
+            Log.info("Discovery", "Found \(device)\(r.containerID.map { " container_id=\($0)" } ?? "")")
+            me.onDeviceFound?(device)
+            me.finish(r, error: nil)
+        }, ctx)
+        guard err == kDNSServiceErr_NoError, let ref else {
+            finish(r, error: "address lookup failed (\(err))")
+            return
+        }
+        r.ref = ref
+        DNSServiceSetDispatchQueue(ref, queue)
+    }
+
+    private func finish(_ r: Resolution, error: String?) {
+        guard !r.done else { return }
+        if let error { Log.warn("Discovery", "Could not resolve \(r.name): \(error)") }
+        r.cancel()
+        // Defer the release: we may be inside one of this resolution's callbacks.
+        queue.async { [self] in
+            if resolutions.removeValue(forKey: ObjectIdentifier(r)) != nil {
+                Unmanaged.passUnretained(r).release()
             }
         }
     }
 
-    private func resolve(_ result: NWBrowser.Result) {
-        guard case .service(let name, _, _, _) = result.endpoint else { return }
+    private func isLoopback(_ index: UInt32) -> Bool {
+        var name = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
+        guard if_indextoname(index, &name) != nil else { return false }
+        return String(cString: name).hasPrefix("lo")
+    }
 
-        let resolveParams = NWParameters.tcp
-        let conn = NWConnection(to: result.endpoint, using: resolveParams)
-        conn.stateUpdateHandler = { [weak self] state in
-            guard let self = self else { return }
-            if case .ready = state {
-                if let path = conn.currentPath,
-                   let remote = path.remoteEndpoint,
-                   case .hostPort(let host, let port) = remote {
-                    let ipStr = "\(host)".components(separatedBy: "%").first ?? "\(host)"
-                    let device = MiracastDevice(name: name, ipAddress: ipStr, port: port.rawValue)
-                    print("[Discovery] Resolved: \(device)")
-                    self.onDeviceFound?(device)
-                }
-                conn.cancel()
-            } else if case .failed = state {
-                conn.cancel()
-            }
-        }
-        conn.start(queue: queue)
+    private static func txtValue(_ key: String, _ len: UInt16, _ txt: UnsafePointer<UInt8>?) -> String? {
+        guard let txt else { return nil }
+        var valueLen: UInt8 = 0
+        guard let ptr = TXTRecordGetValuePtr(len, txt, key, &valueLen) else { return nil }
+        return String(decoding: UnsafeRawBufferPointer(start: ptr, count: Int(valueLen)), as: UTF8.self)
     }
 }

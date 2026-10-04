@@ -3,40 +3,55 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 
-// Wraps VTCompressionSession for real-time H.264 encoding.
-// Produces AVCC-format CMSampleBuffers → pass to AnnexBConverter for NAL extraction.
+// Wraps VTCompressionSession for real-time H.264 (Baseline, no B-frames).
+// Output is AVCC CMSampleBuffers → H264Bitstream.accessUnit for Annex B.
 final class H264Encoder {
 
     struct Config {
-        var width: Int32  = 1280
-        var height: Int32 = 720
+        var width: Int32  = 1920
+        var height: Int32 = 1080
         var fps: Int32    = 30
-        var bitrate: Int  = 4_000_000  // 4 Mbps
+        var bitrate: Int  = 6_000_000
+        var levelBit: UInt8 = 0x04          // WFD level bit (0x01=3.1 … 0x10=4.2)
+        var keyframeIntervalSeconds: Int32 = 2
     }
 
     var onEncoded: ((_ sampleBuffer: CMSampleBuffer, _ isKeyframe: Bool) -> Void)?
 
+    let config: Config
     private var session: VTCompressionSession?
-    private let config: Config
-    private var lastFormatDescription: CMFormatDescription?
-    private var formatDescriptionSent = false
+    private let forceKeyLock = NSLock()
+    private var forceNextKeyframe = true
 
-    init(config: Config = Config()) {
+    init(config: Config) {
         self.config = config
+    }
+
+    static func profileLevel(forLevelBit bit: UInt8) -> CFString {
+        switch bit {
+        case 0x01: return kVTProfileLevel_H264_Baseline_3_1
+        case 0x02: return kVTProfileLevel_H264_Baseline_3_2
+        case 0x04: return kVTProfileLevel_H264_Baseline_4_0
+        case 0x08: return kVTProfileLevel_H264_Baseline_4_1
+        default:   return kVTProfileLevel_H264_Baseline_4_2
+        }
     }
 
     func start() throws {
         var session: VTCompressionSession?
+        let spec: [CFString: Any] = [
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
+        ]
         let status = VTCompressionSessionCreate(
             allocator: nil,
             width: config.width,
             height: config.height,
             codecType: kCMVideoCodecType_H264,
-            encoderSpecification: nil,
+            encoderSpecification: spec as CFDictionary,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
             outputCallback: { refcon, _, status, flags, sampleBuffer in
-                guard let refcon, status == noErr, let sampleBuffer else { return }
+                guard let refcon else { return }
                 let encoder = Unmanaged<H264Encoder>.fromOpaque(refcon).takeUnretainedValue()
                 encoder.handleOutput(status: status, flags: flags, sampleBuffer: sampleBuffer)
             },
@@ -49,62 +64,66 @@ final class H264Encoder {
         self.session = session
 
         let props: [(CFString, Any)] = [
-            (kVTCompressionPropertyKey_ProfileLevel,          kVTProfileLevel_H264_Baseline_3_2),
+            (kVTCompressionPropertyKey_ProfileLevel,          Self.profileLevel(forLevelBit: config.levelBit)),
             (kVTCompressionPropertyKey_RealTime,              true),
             (kVTCompressionPropertyKey_AllowFrameReordering,  false),
-            (kVTCompressionPropertyKey_MaxKeyFrameInterval,   config.fps * 3),
+            (kVTCompressionPropertyKey_MaxKeyFrameInterval,   config.fps * config.keyframeIntervalSeconds),
+            (kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, config.keyframeIntervalSeconds),
             (kVTCompressionPropertyKey_ExpectedFrameRate,     config.fps),
             (kVTCompressionPropertyKey_AverageBitRate,        config.bitrate),
-            (kVTCompressionPropertyKey_DataRateLimits,        [config.bitrate / 8, 1] as CFArray),
+            // Cap bursts at 1.5× the average over any 1 s window to spare the Wi-Fi link.
+            (kVTCompressionPropertyKey_DataRateLimits,        [config.bitrate * 3 / 16, 1] as CFArray),
             (kVTCompressionPropertyKey_H264EntropyMode,       kVTH264EntropyMode_CAVLC),
         ]
         for (key, value) in props {
-            VTSessionSetProperty(session, key: key, value: value as CFTypeRef)
+            let s = VTSessionSetProperty(session, key: key, value: value as CFTypeRef)
+            if s != noErr { Log.warn("Encoder", "Property \(key) not accepted (\(s))") }
         }
 
         VTCompressionSessionPrepareToEncodeFrames(session)
-        print("[Encoder] H.264 session ready \(config.width)×\(config.height) @\(config.fps)fps \(config.bitrate/1000)kbps")
+        Log.info("Encoder", "H.264 \(config.width)×\(config.height) @\(config.fps)fps \(config.bitrate / 1000) kbps, level bit 0x\(String(config.levelBit, radix: 16))")
+    }
+
+    func forceKeyframe() {
+        forceKeyLock.withLock { forceNextKeyframe = true }
     }
 
     func encode(_ pixelBuffer: CVPixelBuffer, pts: CMTime, duration: CMTime) {
         guard let session else { return }
-        var flags = VTEncodeInfoFlags()
-        VTCompressionSessionEncodeFrame(session,
-                                        imageBuffer: pixelBuffer,
-                                        presentationTimeStamp: pts,
-                                        duration: duration,
-                                        frameProperties: nil,
-                                        sourceFrameRefcon: nil,
-                                        infoFlagsOut: &flags)
+        let force = forceKeyLock.withLock { () -> Bool in
+            defer { forceNextKeyframe = false }
+            return forceNextKeyframe
+        }
+        let props = force ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
+        let status = VTCompressionSessionEncodeFrame(session,
+                                                     imageBuffer: pixelBuffer,
+                                                     presentationTimeStamp: pts,
+                                                     duration: duration,
+                                                     frameProperties: props,
+                                                     sourceFrameRefcon: nil,
+                                                     infoFlagsOut: nil)
+        if status != noErr { Log.warn("Encoder", "EncodeFrame failed: \(status)") }
     }
 
     func stop() {
         guard let session else { return }
+        VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
         VTCompressionSessionInvalidate(session)
         self.session = nil
     }
 
-    // MARK: - Output callback
-
-    private func handleOutput(status: OSStatus, flags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer) {
-        guard status == noErr else { return }
-
-        let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
-        let isKeyframe: Bool
-        if let arr = attachments as? [[CFString: Any]], let first = arr.first {
-            isKeyframe = first[kCMSampleAttachmentKey_NotSync] == nil
-        } else {
-            isKeyframe = true
+    private func handleOutput(status: OSStatus, flags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
+        guard status == noErr, let sampleBuffer else {
+            if status != noErr { Log.warn("Encoder", "Encode error \(status)") }
+            return
         }
+        if flags.contains(.frameDropped) { return }
 
-        // On new format description (IDR + format change), send parameter sets first
-        if let fmt = CMSampleBufferGetFormatDescription(sampleBuffer) {
-            if !formatDescriptionSent || fmt !== lastFormatDescription {
-                lastFormatDescription = fmt
-                formatDescriptionSent = true
-            }
+        var isKeyframe = true
+        if let arr = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],
+           let first = arr.first {
+            isKeyframe = (first[kCMSampleAttachmentKey_NotSync] as? Bool) != true
         }
-
         onEncoded?(sampleBuffer, isKeyframe)
     }
 

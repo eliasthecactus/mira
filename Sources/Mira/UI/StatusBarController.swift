@@ -6,35 +6,40 @@ final class StatusBarController: NSObject {
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let popover = NSPopover()
-    private var listVC: DeviceListViewController!
+    private let listVC = DeviceListViewController()
     private var eventMonitor: Any?
+
+    var onMirrorRequested: ((MiracastDevice) -> Void)? {
+        get { listVC.onMirrorRequested }
+        set { listVC.onMirrorRequested = newValue }
+    }
+
+    var onStopRequested: (() -> Void)? {
+        get { listVC.onStopRequested }
+        set { listVC.onStopRequested = newValue }
+    }
 
     override init() {
         super.init()
-        listVC = DeviceListViewController()
         popover.contentViewController = listVC
         popover.behavior = .transient
         popover.animates = true
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "display.and.arrow.down", accessibilityDescription: "Mira")
+            button.image = NSImage(systemSymbolName: "rectangle.on.rectangle", accessibilityDescription: "Mira")
             button.action = #selector(togglePopover)
             button.target = self
         }
     }
 
     @objc private func togglePopover() {
-        if popover.isShown {
-            closePopover()
-        } else {
-            openPopover()
-        }
+        popover.isShown ? closePopover() : openPopover()
     }
 
     private func openPopover() {
         guard let button = statusItem.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        // Close when clicking outside
+        NSApp.activate(ignoringOtherApps: true)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closePopover()
         }
@@ -48,29 +53,27 @@ final class StatusBarController: NSObject {
         }
     }
 
-    // Called by MiraController to update device list and streaming state
     func updateDevices(_ devices: [MiracastDevice]) {
-        DispatchQueue.main.async { self.listVC.updateDevices(devices) }
+        listVC.updateDevices(devices)
     }
 
-    func setStreamingState(device: MiracastDevice?, fps: Double, kbps: Int) {
-        DispatchQueue.main.async {
-            self.listVC.setStreamingState(device: device, fps: fps, kbps: kbps)
-            if let button = self.statusItem.button {
-                button.image = device != nil
-                    ? NSImage(systemSymbolName: "display.and.arrow.down.fill", accessibilityDescription: "Mira active")
-                    : NSImage(systemSymbolName: "display.and.arrow.down", accessibilityDescription: "Mira")
-            }
-        }
+    func setStatus(_ status: MiraController.Status) {
+        listVC.setStatus(status)
+        let active: Bool
+        if case .streaming = status { active = true } else { active = false }
+        statusItem.button?.image = NSImage(systemSymbolName: active ? "rectangle.fill.on.rectangle.fill" : "rectangle.on.rectangle",
+                                           accessibilityDescription: active ? "Mira (mirroring)" : "Mira")
     }
 
-    var onMirrorRequested: ((MiracastDevice) -> Void)? {
-        get { listVC.onMirrorRequested }
-        set { listVC.onMirrorRequested = newValue }
+    func setStats(_ stats: MiraStats) {
+        listVC.setStats(stats)
     }
 
-    var onStopRequested: (() -> Void)? {
-        get { listVC.onStopRequested }
-        set { listVC.onStopRequested = newValue }
+    func setUpdate(_ release: UpdateChecker.Release?) {
+        listVC.setUpdate(release)
+    }
+
+    func showPopover() {
+        if !popover.isShown { openPopover() }
     }
 }

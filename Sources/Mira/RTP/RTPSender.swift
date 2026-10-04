@@ -1,29 +1,38 @@
 import Foundation
 import Network
 
-// Sends RTP packets over UDP to a Miracast sink.
+// Sends RTP packets over UDP to the sink from a fixed local port (the port we
+// announce as server_port in the SETUP response).
 final class RTPSender {
 
     private var connection: NWConnection?
     private let localPort: UInt16
     private let queue = DispatchQueue(label: "mira.rtp", qos: .userInteractive)
-    private(set) var packetsSent: UInt64 = 0
-    private(set) var bytesSent: UInt64 = 0
+    private let statsLock = NSLock()
+    private var _packetsSent: UInt64 = 0
+    private var _bytesSent: UInt64 = 0
+    private var _sendErrors: UInt64 = 0
 
-    init(localPort: UInt16 = WFDCapabilities.rtpVideoPort) {
+    var packetsSent: UInt64 { statsLock.withLock { _packetsSent } }
+    var bytesSent: UInt64 { statsLock.withLock { _bytesSent } }
+    var sendErrors: UInt64 { statsLock.withLock { _sendErrors } }
+
+    init(localPort: UInt16) {
         self.localPort = localPort
     }
 
     func connect(toHost host: String, port: UInt16) {
         let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "0.0.0.0", port: NWEndpoint.Port(rawValue: localPort)!)
+        params.serviceClass = .interactiveVideo
         let conn = NWConnection(host: NWEndpoint.Host(host),
                                 port: NWEndpoint.Port(rawValue: port)!,
                                 using: params)
         conn.stateUpdateHandler = { state in
             switch state {
-            case .ready:  print("[RTP] UDP sender ready → \(host):\(port)")
-            case .failed(let e): print("[RTP] UDP sender failed: \(e)")
+            case .ready:  Log.info("RTP", "UDP \(self.localPort) → \(host):\(port) ready")
+            case .failed(let e): Log.error("RTP", "UDP sender failed: \(e)")
             default: break
             }
         }
@@ -31,19 +40,22 @@ final class RTPSender {
         self.connection = conn
     }
 
-    func send(_ packet: Data) {
-        connection?.send(content: packet, completion: .contentProcessed { [weak self] err in
-            if let err {
-                print("[RTP] send error: \(err)")
-                return
-            }
-            self?.packetsSent += 1
-            self?.bytesSent += UInt64(packet.count)
-        })
-    }
-
     func send(_ packets: [Data]) {
-        for p in packets { send(p) }
+        guard let connection else { return }
+        connection.batch {
+            for p in packets {
+                connection.send(content: p, completion: .contentProcessed { [weak self] err in
+                    guard let self else { return }
+                    self.statsLock.withLock {
+                        if err != nil { self._sendErrors += 1 } else {
+                            self._packetsSent += 1
+                            self._bytesSent += UInt64(p.count)
+                        }
+                    }
+                    if let err, self.sendErrors % 100 == 1 { Log.warn("RTP", "send error: \(err)") }
+                })
+            }
+        }
     }
 
     func disconnect() {

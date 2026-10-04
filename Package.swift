@@ -16,11 +16,15 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Network"),
                 .linkedFramework("Foundation"),
+                // Embed Info.plist so the bare executable has a bundle ID and the
+                // Local Network / Bonjour usage strings (macOS 15+ local network privacy).
+                .unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
+                              "-Xlinker", Context.packageDirectory + "/Support/Info.plist"]),
             ]
         ),
         .testTarget(
             name: "MiraTests",
-            dependencies: [],
+            dependencies: ["Mira"],
             path: "Tests/MiraTests"
         )
     ]
