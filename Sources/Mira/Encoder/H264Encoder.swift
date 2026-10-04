@@ -22,6 +22,7 @@ final class H264Encoder {
     private var session: VTCompressionSession?
     private let forceKeyLock = NSLock()
     private var forceNextKeyframe = true
+    private var discardOutput = false
 
     init(config: Config) {
         self.config = config
@@ -84,6 +85,32 @@ final class H264Encoder {
         Log.info("Encoder", "H.264 \(config.width)×\(config.height) @\(config.fps)fps \(config.bitrate / 1000) kbps, level bit 0x\(String(config.levelBit, radix: 16))")
     }
 
+    // The first frame through a fresh session can take hundreds of ms (much more with
+    // the software encoder on machines without a hardware one). Push one black
+    // frame through and drop the output so the stream's first real frame is on time.
+    func warmUp() {
+        guard let session else { return }
+        var pb: CVPixelBuffer?
+        let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary
+        guard CVPixelBufferCreate(nil, Int(config.width), Int(config.height),
+                                  kCVPixelFormatType_32BGRA, attrs, &pb) == kCVReturnSuccess, let pb else { return }
+        CVPixelBufferLockBaseAddress(pb, [])
+        if let base = CVPixelBufferGetBaseAddress(pb) {
+            memset(base, 0, CVPixelBufferGetDataSize(pb))
+        }
+        CVPixelBufferUnlockBaseAddress(pb, [])
+
+        let start = Date()
+        discardOutput = true
+        VTCompressionSessionEncodeFrame(session, imageBuffer: pb, presentationTimeStamp: .zero,
+                                        duration: .invalid, frameProperties: nil,
+                                        sourceFrameRefcon: nil, infoFlagsOut: nil)
+        VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
+        discardOutput = false
+        forceKeyframe()
+        Log.info("Encoder", String(format: "Warm-up frame took %.0f ms", Date().timeIntervalSince(start) * 1000))
+    }
+
     func forceKeyframe() {
         forceKeyLock.withLock { forceNextKeyframe = true }
     }
@@ -118,6 +145,7 @@ final class H264Encoder {
             return
         }
         if flags.contains(.frameDropped) { return }
+        if discardOutput { return }
 
         var isKeyframe = true
         if let arr = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],

@@ -56,6 +56,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     private var _stats = Stats()
     private var lastNoFrameWarning: Double = 0
     private var lastFrameSlot: Int64 = -1
+    private var clockStarted = false      // muxQueue: nothing is muxed before the stream clock starts
 
     var stats: Stats {
         var s = statsLock.withLock { _stats }
@@ -82,7 +83,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     static func hostNow() -> Double { CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) }
 
     func start() async throws {
-        baseHost = Self.hostNow()
+        baseHost = Self.hostNow()   // provisional; reset right before the first frame
         let r = config.format.resolution
 
         if let url = config.dumpTS {
@@ -108,6 +109,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             self.muxQueue.async { self.muxVideo(au, captureHost: pts, isKeyframe: isKey) }
         }
         try encoder.start()
+        encoder.warmUp()
 
         if let codec = config.format.audio {
             let enc: AudioEncoding = codec.format == "LPCM" ? LPCMEncoder() : try AACEncoder()
@@ -135,6 +137,11 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         }
         try await src.start()
         source = src
+        // Start the stream clock only now, after encoder warm-up and capture start-up.
+        muxQueue.sync {
+            baseHost = Self.hostNow()
+            clockStarted = true
+        }
         startPump()
     }
 
@@ -209,7 +216,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             _stats.framesEncoded += 1
             if isKeyframe { _stats.keyframes += 1 }
         }
-        guard !paused, !stopped else { return }
+        guard clockStarted, !paused, !stopped else { return }
         let pcr = pcr27M()
         let ts = muxer.muxVideo(accessUnit: au, pts90k: pts90k(captureHost), pcr27M: pcr, isKeyframe: isKeyframe)
         emit(ts, pcr: pcr, flush: true)
@@ -217,7 +224,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
 
     private func muxAudio(_ frame: Data, captureHost: Double) {
         statsLock.withLock { _stats.audioFrames += 1 }
-        guard !paused, !stopped else { return }
+        guard clockStarted, !paused, !stopped else { return }
         let pcr = pcr27M()
         let ts = muxer.muxAudio(frame, pts90k: pts90k(captureHost), pcr27M: pcr)
         emit(ts, pcr: pcr, flush: true)
