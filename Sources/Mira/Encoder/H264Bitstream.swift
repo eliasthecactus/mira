@@ -24,7 +24,7 @@ enum H264Bitstream {
         var out = Data(startCode + accessUnitDelimiter)
         for ps in parameterSets {
             out.append(contentsOf: startCode)
-            out.append(markConstrainedBaseline(ps))
+            out.append(markConstrained(ps))
         }
         for n in nalus {
             out.append(contentsOf: startCode)
@@ -33,13 +33,19 @@ enum H264Bitstream {
         return out
     }
 
-    // VideoToolbox's Baseline output never uses FMO/ASO/redundant slices, i.e. it is
-    // already Constrained Baseline — but its SPS does not always say so. WFD sinks
-    // are only required to decode CBP, so set constraint_set0/1 on baseline SPSs.
-    static func markConstrainedBaseline(_ nal: Data) -> Data {
+    // WFD signals Constrained Baseline / Constrained High. VideoToolbox's output already
+    // meets those constraints (no FMO/ASO/redundant slices; progressive; no B-frames
+    // because frame reordering is off) but its SPS doesn't always say so:
+    //   Baseline (66): set constraint_set0/1   → Constrained Baseline
+    //   High (100):    set constraint_set4/5   → Constrained High
+    static func markConstrained(_ nal: Data) -> Data {
         var b = [UInt8](nal)
-        guard b.count >= 4, b[0] & 0x1F == 7, b[1] == 66 else { return nal }
-        b[2] |= 0xC0
+        guard b.count >= 4, b[0] & 0x1F == 7 else { return nal }
+        switch b[1] {
+        case 66:  b[2] |= 0xC0
+        case 100: b[2] |= 0x0C
+        default:  return nal
+        }
         return Data(b)
     }
 

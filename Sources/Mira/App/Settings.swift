@@ -40,6 +40,31 @@ enum Settings {
         get { d.bool(forKey: "testPattern") }
         set { d.set(newValue, forKey: "testPattern") }
     }
+    // What the privacy pause shows: the last frame (freeze) or black.
+    static var privacyMode: MediaPipeline.PrivacyMode {
+        get { d.string(forKey: "privacyMode").flatMap(MediaPipeline.PrivacyMode.init).flatMap { $0 == .off ? nil : $0 } ?? .freeze }
+        set { d.set(newValue.rawValue, forKey: "privacyMode") }
+    }
+    // Entire screen or an app (windows are too short-lived to remember).
+    static var shareTarget: CaptureTarget {
+        get {
+            guard let v = d.string(forKey: "shareTarget"), v.hasPrefix("app:") else { return .screen }
+            let parts = v.dropFirst(4).split(separator: "|", maxSplits: 1).map(String.init)
+            return parts.count == 2 ? .app(bundleID: parts[0], name: parts[1]) : .screen
+        }
+        set {
+            if case .app(let id, let name) = newValue { d.set("app:\(id)|\(name)", forKey: "shareTarget") }
+            else { d.removeObject(forKey: "shareTarget") }
+        }
+    }
+    static var lowLatency: Bool {
+        get { d.bool(forKey: "lowLatency") }
+        set { d.set(newValue, forKey: "lowLatency") }
+    }
+    static var fps: Int {
+        get { d.object(forKey: "fps") as? Int ?? 30 }
+        set { d.set(newValue, forKey: "fps") }
+    }
     static var reconnectOnLaunch: Bool {
         get { d.bool(forKey: "reconnectOnLaunch") }
         set { d.set(newValue, forKey: "reconnectOnLaunch") }
@@ -78,6 +103,10 @@ enum Settings {
         o.extendDisplay = extendDisplay
         o.security = security
         o.muteMac = muteMac
+        o.target = shareTarget
+        o.lowLatency = lowLatency
+        o.prefs.lowLatency = lowLatency
+        o.prefs.fps = fps
         // A remembered display that is no longer connected falls back to the main one.
         if let id = displayID, DisplayInfo.all().contains(where: { $0.id == id }) { o.displayID = id }
         return o

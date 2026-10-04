@@ -175,30 +175,39 @@ final class ExtendedDisplay: @unchecked Sendable {   // immutable; the virtual d
     }
 }
 
-// MARK: - Global keyboard shortcut
+// MARK: - Global keyboard shortcuts
 
-// ⌃⌥⌘M by default. Carbon hot keys need no Accessibility permission.
+// ⌃⌥⌘M start/stop, ⌃⌥⌘P privacy pause. Carbon hot keys need no Accessibility permission.
 final class GlobalHotKey {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
+    private let id: UInt32
     private let action: () -> Void
 
-    static let displayString = "⌃⌥⌘M"
+    static let toggleMirroring = (keyCode: kVK_ANSI_M, display: "⌃⌥⌘M")
+    static let togglePrivacy = (keyCode: kVK_ANSI_P, display: "⌃⌥⌘P")
+    static let displayString = toggleMirroring.display
 
-    init?(keyCode: Int = kVK_ANSI_M, modifiers: Int = controlKey | optionKey | cmdKey, action: @escaping () -> Void) {
+    init?(id: UInt32, keyCode: Int, modifiers: Int = controlKey | optionKey | cmdKey, action: @escaping () -> Void) {
+        self.id = id
         self.action = action
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let status = InstallEventHandler(GetApplicationEventTarget(), { _, _, ctx in
-            guard let ctx else { return noErr }
+        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, ctx in
+            guard let ctx, let event else { return OSStatus(eventNotHandledErr) }
             let me = Unmanaged<GlobalHotKey>.fromOpaque(ctx).takeUnretainedValue()
+            var hk = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                              nil, MemoryLayout<EventHotKeyID>.size, nil, &hk)
+            // Every handler sees every hot key; only react to our own.
+            guard hk.id == me.id else { return OSStatus(eventNotHandledErr) }
             DispatchQueue.main.async { me.action() }
             return noErr
         }, 1, &spec, ctx, &handlerRef)
         guard status == noErr else { return nil }
-        let id = EventHotKeyID(signature: OSType(0x4D495241), id: 1)   // 'MIRA'
-        guard RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), id, GetApplicationEventTarget(), 0, &hotKeyRef) == noErr else {
-            Log.warn("Mira", "Keyboard shortcut \(Self.displayString) is taken by another app")
+        let hkID = EventHotKeyID(signature: OSType(0x4D495241), id: id)   // 'MIRA'
+        guard RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hkID, GetApplicationEventTarget(), 0, &hotKeyRef) == noErr else {
+            Log.warn("Mira", "A keyboard shortcut (id \(id)) is taken by another app")
             return nil
         }
     }

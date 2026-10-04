@@ -182,6 +182,8 @@ final class AudioNegotiationTests: XCTestCase {
         XCTAssertEqual(MiraController.defaultDelay(WFDAudioCodec(format: "AAC", modes: 1, latency: 0)), 0.2)
         XCTAssertEqual(MiraController.defaultDelay(WFDAudioCodec(format: "LPCM", modes: 2, latency: 0)), 0.15)
         XCTAssertEqual(MiraController.defaultDelay(nil), 0.12)
+        XCTAssertEqual(MiraController.defaultDelay(WFDAudioCodec(format: "LPCM", modes: 2, latency: 0), lowLatency: true), 0.1)
+        XCTAssertEqual(MiraController.defaultDelay(nil, lowLatency: true), 0.05)
     }
 }
 

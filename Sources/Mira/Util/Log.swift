@@ -15,8 +15,15 @@ enum Log {
     }()
 
     private static let queue = DispatchQueue(label: "mira.log")
+    static var previousLogFileURL: URL { logFileURL.deletingPathExtension().appendingPathExtension("1.log") }
+
     private static var fileHandle: FileHandle? = {
         let url = logFileURL
+        // Keep the log bounded: rotate to mira.1.log once it passes 10 MB.
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int, size > 10 << 20 {
+            try? FileManager.default.removeItem(at: previousLogFileURL)
+            try? FileManager.default.moveItem(at: url, to: previousLogFileURL)
+        }
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }

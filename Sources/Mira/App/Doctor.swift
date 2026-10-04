@@ -5,8 +5,20 @@ import Network
 // `Mira doctor`: checks the local causes of "the adapter never shows anything".
 enum Doctor {
 
+    private static var emit: (String) -> Void = { print($0) }
+
+    // The same checks as `run()`, returned as text (for the diagnostics bundle).
+    static func report() -> String {
+        var text = ""
+        let previous = emit
+        emit = { text += $0 + "\n" }
+        run()
+        emit = previous
+        return text
+    }
+
     static func run() {
-        print("Mira doctor\n")
+        emit("Mira doctor\n")
         checkScreenRecording()
         checkFirewall()
         checkPort(7236, what: "RTSP (the sink connects here)")
@@ -14,7 +26,7 @@ enum Doctor {
         checkInterfaces()
         checkVPN()
         checkExtendMode()
-        print("""
+        emit("""
 
         Local Network permission: if `Mira list` finds nothing although the adapter is on, make sure Mira is
         enabled in System Settings → Privacy & Security → Local Network (macOS reports no error when it's off).
@@ -103,25 +115,25 @@ enum Doctor {
     private static func checkVPN() {
         let nwi = shell("/usr/sbin/scutil", ["--nwi"])
         guard nwi.contains("VPN server") else { return }
-        print("  ℹ️  A VPN is connected. Discovery handles that, but if the adapter can't be reached, try disconnecting it.")
+        emit("  ℹ️  A VPN is connected. Discovery handles that, but if the adapter can't be reached, try disconnecting it.")
     }
 
 
     // Creates and drops a small virtual display to see whether Extend mode can work here.
     private static func checkExtendMode() {
         guard ExtendedDisplay.isSupported else {
-            print("  ℹ️  Extend (second screen) mode is not available on this macOS version; Mirror mode works")
+            emit("  ℹ️  Extend (second screen) mode is not available on this macOS version; Mirror mode works")
             return
         }
         var result: Bool?
         Task { @MainActor in result = await ExtendedDisplay.probe() }
         while result == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
         if result == true { ok("Extend (second screen) mode works on this Mac") }
-        else { print("  ℹ️  Extend (second screen) mode: macOS didn't switch the virtual display on, so Mira will mirror instead") }
+        else { emit("  ℹ️  Extend (second screen) mode: macOS didn't switch the virtual display on, so Mira will mirror instead") }
     }
 
-    private static func ok(_ s: String) { print("  ✅ \(s)") }
-    private static func warn(_ s: String, fix: String) { print("  ⚠️  \(s)\n    → \(fix)") }
+    private static func ok(_ s: String) { emit("  ✅ \(s)") }
+    private static func warn(_ s: String, fix: String) { emit("  ⚠️  \(s)\n    → \(fix)") }
 
     private static func shell(_ path: String, _ args: [String]) -> String {
         let p = Process()

@@ -44,16 +44,22 @@ struct WFDResolution: Equatable, CustomStringConvertible {
     var description: String { "\(width)x\(height)p\(fps)" }
 
     // Lowest H.264 level (as WFD level bit) that can carry this resolution/frame rate.
-    // WFD level bits: 0x01=3.1, 0x02=3.2, 0x04=4, 0x08=4.1, 0x10=4.2
+    // WFD level bits: 0x01=3.1, 0x02=3.2, 0x04=4, 0x08=4.1, 0x10=4.2, and for the
+    // 4K modes of later WFD revisions 0x20=5, 0x40=5.1, 0x80=5.2.
     var requiredLevelBit: UInt8 {
         let macroblocksPerSecond = ((width + 15) / 16) * ((height + 15) / 16) * fps
         switch macroblocksPerSecond {
         case ...108_000: return 0x01   // 3.1
         case ...216_000: return 0x02   // 3.2
         case ...245_760: return 0x04   // 4 / 4.1
-        default:         return 0x10   // 4.2 (522,240 MB/s)
+        case ...522_240: return 0x10   // 4.2
+        case ...589_824: return 0x20   // 5
+        case ...983_040: return 0x40   // 5.1 (3840x2160p30)
+        default:         return 0x80   // 5.2 (3840x2160p60)
         }
     }
+
+    var is4K: Bool { width >= 3840 }
 
     // CEA-861 table (WFD spec table 5-10) — only progressive entries we can produce.
     static let cea: [WFDResolution] = [
@@ -70,6 +76,12 @@ struct WFDResolution: Equatable, CustomStringConvertible {
         .init(width: 1920, height: 1080, fps: 50, table: .cea, bit: 13),
         .init(width: 1280, height: 720,  fps: 24, table: .cea, bit: 15),
         .init(width: 1920, height: 1080, fps: 24, table: .cea, bit: 16),
+        // 4K entries of the extended CEA bitmap (as in GNOME Network Displays' table).
+        .init(width: 3840, height: 2160, fps: 24, table: .cea, bit: 17),
+        .init(width: 3840, height: 2160, fps: 25, table: .cea, bit: 18),
+        .init(width: 3840, height: 2160, fps: 30, table: .cea, bit: 19),
+        .init(width: 3840, height: 2160, fps: 50, table: .cea, bit: 20),
+        .init(width: 3840, height: 2160, fps: 60, table: .cea, bit: 21),
     ]
 
     // Mandatory for every WFD sink.
@@ -94,7 +106,7 @@ struct WFDH264Codec: Equatable {
 
     // Highest level bit the sink advertises (the field is a bitmap on some sinks).
     var maxLevelBit: UInt8 {
-        var bit: UInt8 = 0x10
+        var bit: UInt8 = 0x80
         while bit > 0 { if level & bit != 0 { return bit }; bit >>= 1 }
         return 0x01
     }
@@ -205,8 +217,9 @@ struct WFDSinkCapabilities {
 // MARK: - Negotiated format
 
 struct StreamPreferences {
+    // auto = best up to 1080p (4K needs ~30 Mbit/s of Wi-Fi, so it's opt-in).
     enum ResolutionChoice: String, CaseIterable {
-        case auto, p1080 = "1080p", p720 = "720p"
+        case auto, p2160 = "4k", p1080 = "1080p", p720 = "720p"
     }
     enum AudioCodecChoice: String, CaseIterable {
         case auto, aac, lpcm
@@ -216,43 +229,53 @@ struct StreamPreferences {
     var audio: Bool = true
     var audioCodec: AudioCodecChoice = .auto
     var bitrate: Int = 6_000_000
+    var lowLatency = false          // prefers LPCM (no encoder lookahead)
+    // Extra M3 parameters to ask the sink about (diagnostics, e.g. WFD R2 capabilities).
+    var extraM3Parameters: [String] = []
+
+    static let wfd2ProbeParameters = ["wfd2_video_formats", "wfd2_audio_codecs", "wfd2_video_codecs",
+                                      "wfd_display_edid", "wfd_uibc_capability", "wfd_idr_request_capability",
+                                      "microsoft_cursor", "microsoft_latency_management_capability"]
 }
 
 struct WFDNegotiatedFormat: Equatable {
     var resolution: WFDResolution
-    var profileBit: UInt8       // 0x01 CBP
+    var profileBit: UInt8       // 0x01 Constrained Baseline, 0x02 Constrained High
     var levelBit: UInt8
     var audio: WFDAudioCodec?   // AAC 48 kHz stereo when enabled
     var rtpPort0: UInt16
     var rtpPort1: UInt16
     var rtpProfile: String
 
-    // Pick the best format both sides support. Constrained Baseline is mandatory
-    // for sinks, so we always use it; resolution preference is 1080p30 → 720p30 →
-    // the mandatory 640x480p60.
+    var isHighProfile: Bool { profileBit == 0x02 }
+
+    // Pick the best format both sides support. Constrained Baseline is mandatory for
+    // sinks and preferred; Constrained High is used when only a CHP entry offers the
+    // wanted resolution (typical for 4K). Falls back to the mandatory 640x480p60.
     static func choose(sink: WFDSinkCapabilities, prefs: StreamPreferences) -> WFDNegotiatedFormat {
         let codecs = sink.videoFormats?.codecs ?? []
-        let codec: WFDH264Codec? = codecs.first(where: { $0.profile & 0x01 != 0 }) ?? codecs.first
         let fps = prefs.fps
+        func res(_ w: Int, _ h: Int, _ f: Int) -> WFDResolution? { WFDResolution.cea(width: w, height: h, fps: f) }
 
-        var candidates: [WFDResolution] = []
+        var sizes: [(Int, Int)]
         switch prefs.resolution {
-        case .auto, .p1080:
-            candidates = [WFDResolution.cea(width: 1920, height: 1080, fps: fps),
-                          WFDResolution.cea(width: 1280, height: 720, fps: fps)].compactMap { $0 }
-        case .p720:
-            candidates = [WFDResolution.cea(width: 1280, height: 720, fps: fps)].compactMap { $0 }
+        case .p2160: sizes = [(3840, 2160), (1920, 1080), (1280, 720)]
+        case .auto, .p1080: sizes = [(1920, 1080), (1280, 720)]
+        case .p720: sizes = [(1280, 720)]
         }
-        if fps != 30 {
-            candidates += [WFDResolution.cea(width: 1920, height: 1080, fps: 30),
-                           WFDResolution.cea(width: 1280, height: 720, fps: 30)].compactMap { $0 }
-        }
+        var candidates: [WFDResolution] = sizes.compactMap { res($0.0, $0.1, fps) }
+        if fps != 30 { candidates += sizes.compactMap { res($0.0, $0.1, 30) } }
+
+        // Codec entries in preference order: CBP first, then CHP.
+        let ordered = codecs.filter { $0.profile & 0x01 != 0 } + codecs.filter { $0.profile & 0x01 == 0 && $0.profile & 0x02 != 0 }
 
         var chosen = WFDResolution.mandatory
-        if let codec {
-            for r in candidates where codec.supports(r) && r.requiredLevelBit <= codec.maxLevelBit {
+        var profileBit: UInt8 = 0x01
+        search: for r in candidates {
+            for c in ordered where c.supports(r) && r.requiredLevelBit <= c.maxLevelBit {
                 chosen = r
-                break
+                profileBit = c.profile & 0x01 != 0 ? 0x01 : 0x02
+                break search
             }
         }
 
@@ -265,13 +288,13 @@ struct WFDNegotiatedFormat: Equatable {
         var audio: WFDAudioCodec? = nil
         if prefs.audio {
             switch prefs.audioCodec {
-            case .auto: audio = aac ?? lpcm
+            case .auto: audio = prefs.lowLatency ? (lpcm ?? aac) : (aac ?? lpcm)
             case .aac:  audio = aac
             case .lpcm: audio = lpcm
             }
         }
 
-        return WFDNegotiatedFormat(resolution: chosen, profileBit: 0x01,
+        return WFDNegotiatedFormat(resolution: chosen, profileBit: profileBit,
                                    levelBit: chosen.requiredLevelBit, audio: audio,
                                    rtpPort0: sink.rtpPort0, rtpPort1: sink.rtpPort1,
                                    rtpProfile: sink.rtpProfile)

@@ -6,24 +6,10 @@ enum UpdateChecker {
     struct Release { let version: String; let url: URL }
 
     static func check(completion: @escaping (Release?) -> Void) {
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(AppInfo.repository)/releases?per_page=10")!)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("Mira/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
-        req.timeoutInterval = 15
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data,
-                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                completion(nil); return
-            }
-            let current = AppInfo.version
-            let newest = list.compactMap { r -> Release? in
-                guard r["draft"] as? Bool != true,
-                      let tag = r["tag_name"] as? String,
-                      let html = (r["html_url"] as? String).flatMap(URL.init(string:)) else { return nil }
-                return Release(version: tag.hasPrefix("v") ? String(tag.dropFirst()) : tag, url: html)
-            }.max { isNewer($1.version, than: $0.version) }
-            if let newest, isNewer(newest.version, than: current) { completion(newest) } else { completion(nil) }
-        }.resume()
+        Task {
+            let r = try? await Updater.latest()
+            completion(r.map { Release(version: $0.version, url: $0.page) })
+        }
     }
 
     // Semantic-ish comparison: 1.2.10 > 1.2.9, 1.0.0 > 1.0.0-beta.2 > 1.0.0-beta.1.

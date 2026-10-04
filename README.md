@@ -18,9 +18,30 @@ Mac ──UDP RTP───▶ adapter      MPEG-2 TS: H.264 Constrained Baseline
 |---|---|
 | **Microsoft 4K Wireless Display Adapter** (2019) | **Yes, in principle.** It supports Miracast over Wi-Fi once joined to your network |
 | Microsoft Wireless Display Adapter (2015, "V2") and older | **No.** These only do Wi-Fi Direct, which macOS can't speak |
-| Windows 10/11 PCs, Surface Hub, LG webOS TVs and other MICE receivers | Should work (same protocol), untested |
+| **A Windows 10/11 PC** ("Projecting to this PC") | **Should work.** Microsoft documents Windows as a receiver for this exact protocol. The quickest real-world test, see [below](#testing-with-a-windows-pc-no-adapter-needed) |
+| Surface Hub, LG webOS TVs and other MICE receivers | Should work (same protocol), untested |
 
 Check the label or the box. Microsoft's own support page says only the 4K model supports "Miracast over Wi-Fi".
+
+### Testing with a Windows PC (no adapter needed)
+
+A Windows PC can be the receiver. It's the same protocol, Microsoft's own implementation, and it supports PIN pairing and encryption too.
+
+1. **Windows 11:** Settings → System → Optional features → *View features* → add **Wireless Display**. (Windows 10 1809+: Settings → Apps → Optional features → *Add a feature* → **Wireless Display**.)
+2. Settings → System → **Projecting to this PC**:
+   - *Some Windows and Android devices can project to this PC when you say it's OK* → **Available everywhere on secure networks**
+   - *Ask to project to this PC* → **First time only** (Windows asks you to allow the Mac on the first connection: click **Allow** on the PC)
+   - *Require PIN for pairing* → **Never** to start with. Try **First time** later to test Mira's PIN pairing.
+3. Make sure the PC's network is set to **Private** (Settings → Network & internet → your network → *Private network*). Windows only allows projection on private networks.
+4. Open the **Wireless Display** app on the PC (Windows waits for connections while it's open).
+5. On the Mac, with both on the same network:
+   ```bash
+   mira list                                          # the PC should appear under its name
+   mira connect "<PC name>" --test-pattern --verbose  # colour bars + beep on the PC
+   mira connect "<PC name>"                           # your screen
+   ```
+
+If the PC never appears, connect by its IP (`ipconfig` on the PC). If it says *Sink did not connect back*, check that you clicked **Allow** on the PC within 30 seconds, and that the Mac's firewall allows Mira (`mira doctor`).
 
 ## One-time adapter setup (needs a Windows PC once)
 
@@ -67,6 +88,10 @@ mira connect 192.168.1.42            # mirror the screen (Ctrl-C to stop)
 mira connect "Living Room"           # …or by (part of) its name
 mira connect 192.168.1.42 --test-pattern --verbose
 mira displays                        # pick a screen with --display <n>
+mira windows                         # apps and windows for --app / --window
+mira connect <ip> --app Keynote      # share only Keynote
+mira diagnose                        # diagnostics zip for a bug report
+mira update                          # install the newest release
 mira help                            # all options
 ```
 
@@ -74,9 +99,12 @@ mira help                            # all options
 
 | Setting | Default | Notes |
 |---|---|---|
+| Share | Entire screen | or **one app** (all its windows; everything else, including notifications, stays black) or **one window** (even when covered). Switches live without reconnecting. `--app <name>`, `--window <title>`, list with `mira windows` |
 | Mirror / Extend | Mirror | **Extend** makes the TV a second screen instead of a copy (`--extend`), see below |
 | Display | main display | which screen to mirror: menu or `--display <n>` |
-| Resolution | Best | best of 1080p30 / 720p30 the adapter supports; `--resolution 720p` to force |
+| Resolution | Best | best of 1080p30 / 720p30 the display supports. **4K** (3840×2160) if the display offers it, else 1080p; needs ~30 Mbit/s of Wi-Fi (`--resolution 4k`) |
+| 60 fps | off | smoother motion if the display supports 60 fps (`--fps 60`) |
+| Low latency | off | about 100 ms instead of 200 ms: smaller buffer, LPCM audio, low-latency encoder. Can stutter on weak Wi-Fi (`--low-latency`) |
 | Quality | Auto | adapts the bitrate to your Wi-Fi (backs off on packet loss or congestion, up to 12 Mbit/s); pick a number to fix it (`--bitrate 6`, `--max-bitrate 16`) |
 | Audio | on | AAC if the adapter supports it, else LPCM; `--audio-codec lpcm` to force |
 | Sound only on TV | on | mutes the Mac's speakers while mirroring so you don't hear everything twice; restored afterwards, even after a crash (`--keep-mac-audio` to turn off) |
@@ -84,7 +112,11 @@ mira help                            # all options
 | Reconnect on launch | off | reconnect to the last display when Mira starts |
 | Latency buffer | 200 ms (AAC), 150 ms (LPCM), 120 ms (no audio) | `--delay <ms>`; raise it if audio crackles |
 
-**Keyboard shortcut:** ⌃⌥⌘M starts mirroring to the last display, or stops it. While mirroring, the Mac doesn't go to sleep.
+**Keyboard shortcuts:** ⌃⌥⌘M starts mirroring to the last display, or stops it. ⌃⌥⌘P **pauses the screen**: the TV keeps showing the last frame (or black, per setting), audio goes silent, and your Mac's screen is private, e.g. while typing a password. Press it again to resume. In the CLI, type `p` + Enter (`b` for black), or send `SIGUSR1`. While mirroring, the Mac doesn't go to sleep.
+
+**Updates:** Mira checks GitHub once a day. When a new version is out, the menu shows it, and *Install and Restart* downloads it, verifies its SHA-256 checksum and signature, replaces the app (the old one goes to the Trash) and restarts. CLI: `mira update` (`--check` to only look).
+
+**Diagnostics:** *Diagnostics* in the menu (or `mira diagnose`) saves a zip to your Desktop with the log, `mira doctor` output, system, display and network info, settings and recent crash reports. Attach it to a GitHub issue. It contains IP addresses and device names from your network, so have a look first.
 
 ### Extend: the TV as a second screen
 
@@ -224,6 +256,7 @@ References: [MS-MICE], Wi-Fi Display Technical Specification, Android's open-sou
 
 ## Not implemented (yet)
 
+- **HEVC / Miracast 2 formats.** 4K works with H.264 when the display advertises it. HEVC needs the Wi-Fi Display R2 parameter syntax, which isn't public. `--probe-wfd2` asks the display for those capabilities and logs them, so a real-hardware log can fill the gap.
 - HDCP (only needed for DRM-protected video, which macOS won't screen-capture anyway)
 - UIBC (sending touch/keyboard input back from the TV)
 - Notarized builds out of the box. Supported by the release workflow once Developer ID secrets are added.

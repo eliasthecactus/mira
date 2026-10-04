@@ -3,7 +3,8 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 
-// Wraps VTCompressionSession for real-time H.264 (Baseline, no B-frames).
+// Wraps VTCompressionSession for real-time H.264 (Constrained Baseline or Constrained
+// High — never B-frames).
 // Output is AVCC CMSampleBuffers → H264Bitstream.accessUnit for Annex B.
 final class H264Encoder {
 
@@ -12,9 +13,13 @@ final class H264Encoder {
         var height: Int32 = 1080
         var fps: Int32    = 30
         var bitrate: Int  = 6_000_000
-        var levelBit: UInt8 = 0x04          // WFD level bit (0x01=3.1 … 0x10=4.2)
+        var levelBit: UInt8 = 0x04          // WFD level bit (0x01=3.1 … 0x80=5.2)
+        var highProfile = false             // Constrained High (used for 4K when CBP isn't offered)
+        var lowLatency = false              // VideoToolbox low-latency rate control
         var keyframeIntervalSeconds: Int32 = 2
     }
+
+    private(set) var usingLowLatency = false
 
     var onEncoded: ((_ sampleBuffer: CMSampleBuffer, _ isKeyframe: Bool) -> Void)?
 
@@ -28,21 +33,45 @@ final class H264Encoder {
         self.config = config
     }
 
-    static func profileLevel(forLevelBit bit: UInt8) -> CFString {
+    static func profileLevel(forLevelBit bit: UInt8, high: Bool = false) -> CFString {
+        // Constrained High has no fixed-level constants; the auto level is the lowest that
+        // fits the size and rate, i.e. the level we negotiated.
+        if high { return kVTProfileLevel_H264_ConstrainedHigh_AutoLevel }
         switch bit {
         case 0x01: return kVTProfileLevel_H264_Baseline_3_1
         case 0x02: return kVTProfileLevel_H264_Baseline_3_2
         case 0x04: return kVTProfileLevel_H264_Baseline_4_0
         case 0x08: return kVTProfileLevel_H264_Baseline_4_1
-        default:   return kVTProfileLevel_H264_Baseline_4_2
+        case 0x10: return kVTProfileLevel_H264_Baseline_4_2
+        case 0x20: return kVTProfileLevel_H264_Baseline_5_0
+        case 0x40: return kVTProfileLevel_H264_Baseline_5_1
+        default:   return kVTProfileLevel_H264_Baseline_5_2
         }
     }
 
     func start() throws {
+        if config.lowLatency {
+            do {
+                try createSession(lowLatency: true)
+                usingLowLatency = true
+                return
+            } catch {
+                Log.warn("Encoder", "Low-latency encoder unavailable (\(error)); using the normal one")
+            }
+        }
+        try createSession(lowLatency: false)
+    }
+
+    private func createSession(lowLatency: Bool) throws {
         var session: VTCompressionSession?
-        let spec: [CFString: Any] = [
+        var spec: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
         ]
+        if lowLatency {
+            // Frame-by-frame rate control without lookahead (macOS 11.3+). Requires the
+            // constrained profiles, which is what WFD uses anyway.
+            spec[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true
+        }
         let status = VTCompressionSessionCreate(
             allocator: nil,
             width: config.width,
@@ -64,8 +93,11 @@ final class H264Encoder {
         }
         self.session = session
 
-        let props: [(CFString, Any)] = [
-            (kVTCompressionPropertyKey_ProfileLevel,          Self.profileLevel(forLevelBit: config.levelBit)),
+        let profile: CFString = lowLatency && !config.highProfile
+            ? kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel
+            : Self.profileLevel(forLevelBit: config.levelBit, high: config.highProfile)
+        var props: [(CFString, Any)] = [
+            (kVTCompressionPropertyKey_ProfileLevel,          profile),
             (kVTCompressionPropertyKey_RealTime,              true),
             (kVTCompressionPropertyKey_AllowFrameReordering,  false),
             (kVTCompressionPropertyKey_MaxKeyFrameInterval,   config.fps * config.keyframeIntervalSeconds),
@@ -74,15 +106,19 @@ final class H264Encoder {
             (kVTCompressionPropertyKey_AverageBitRate,        config.bitrate),
             // Cap bursts at 1.5× the average over any 1 s window to spare the Wi-Fi link.
             (kVTCompressionPropertyKey_DataRateLimits,        [config.bitrate * 3 / 16, 1] as CFArray),
-            (kVTCompressionPropertyKey_H264EntropyMode,       kVTH264EntropyMode_CAVLC),
         ]
+        // CABAC is High-profile only; Baseline must use CAVLC.
+        props.append((kVTCompressionPropertyKey_H264EntropyMode, config.highProfile ? kVTH264EntropyMode_CABAC : kVTH264EntropyMode_CAVLC))
+        if lowLatency {
+            props.append((kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, true))
+        }
         for (key, value) in props {
             let s = VTSessionSetProperty(session, key: key, value: value as CFTypeRef)
             if s != noErr { Log.warn("Encoder", "Property \(key) not accepted (\(s))") }
         }
 
         VTCompressionSessionPrepareToEncodeFrames(session)
-        Log.info("Encoder", "H.264 \(config.width)×\(config.height) @\(config.fps)fps \(config.bitrate / 1000) kbps, level bit 0x\(String(config.levelBit, radix: 16))")
+        Log.info("Encoder", "H.264 \(config.highProfile ? "Constrained High" : "Constrained Baseline") \(config.width)×\(config.height) @\(config.fps)fps \(config.bitrate / 1000) kbps, level bit 0x\(String(config.levelBit, radix: 16))\(lowLatency ? ", low-latency" : "")")
     }
 
     // The first frame through a fresh session can take hundreds of ms (much more with

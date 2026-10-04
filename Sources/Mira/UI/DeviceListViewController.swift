@@ -6,6 +6,8 @@ final class DeviceListViewController: NSViewController {
 
     var onMirrorRequested: ((MiracastDevice) -> Void)?
     var onStopRequested: (() -> Void)?
+    var onPrivacyToggle: (() -> Void)?
+    var onTargetChange: ((CaptureTarget) -> Void)?
 
     private var devices: [MiracastDevice] = []
     private var status: MiraController.Status = .idle
@@ -20,9 +22,14 @@ final class DeviceListViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let tableView = NSTableView()
     private let stopButton = NSButton(title: "Stop Mirroring", target: nil, action: nil)
+    private let privacyButton = NSButton(title: "Pause Screen", target: nil, action: nil)
+    private let lowLatencyCheckbox = NSButton(checkboxWithTitle: "Low latency", target: nil, action: nil)
+    private let fpsCheckbox = NSButton(checkboxWithTitle: "60 fps", target: nil, action: nil)
     private let ipField = NSTextField()
     private let ipButton = NSButton(title: "Connect", target: nil, action: nil)
     private let displayPopup = NSPopUpButton()
+    private let targetPopup = NSPopUpButton()
+    private var currentTarget: CaptureTarget = Settings.shareTarget
     private let resolutionPopup = NSPopUpButton()
     private let bitratePopup = NSPopUpButton()
     private let audioCheckbox = NSButton(checkboxWithTitle: "Audio", target: nil, action: nil)
@@ -33,11 +40,12 @@ final class DeviceListViewController: NSViewController {
     private let muteCheckbox = NSButton(checkboxWithTitle: "Sound only on TV", target: nil, action: nil)
     private let reconnectCheckbox = NSButton(checkboxWithTitle: "Reconnect on launch", target: nil, action: nil)
     private let updateButton = NSButton(title: "", target: nil, action: nil)
+    private let controlRow = NSStackView()
 
     private static let width: CGFloat = 340
     private static let bitrates = [0, 3, 4, 6, 8, 12, 16]       // 0 = Auto
     private static let securities: [MiraController.SecurityChoice] = [.auto, .off, .encrypted, .pin]
-    private static let resolutions: [StreamPreferences.ResolutionChoice] = [.auto, .p1080, .p720]
+    private static let resolutions: [StreamPreferences.ResolutionChoice] = [.auto, .p2160, .p1080, .p720]
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 460))
@@ -70,9 +78,16 @@ final class DeviceListViewController: NSViewController {
         scrollView.drawsBackground = false
 
         stopButton.bezelStyle = .rounded
-        stopButton.isHidden = true
         stopButton.target = self
         stopButton.action = #selector(stopTapped)
+        privacyButton.bezelStyle = .rounded
+        privacyButton.target = self
+        privacyButton.action = #selector(privacyTapped)
+        privacyButton.toolTip = "Freeze what the TV shows and mute it, e.g. while typing a password (\(GlobalHotKey.togglePrivacy.display))"
+        controlRow.addArrangedSubview(stopButton)
+        controlRow.addArrangedSubview(privacyButton)
+        controlRow.spacing = 8
+        controlRow.isHidden = true
 
         // Manual IP entry — for networks where mDNS discovery is filtered.
         ipField.placeholderString = "Adapter IP address (if not listed)"
@@ -95,9 +110,15 @@ final class DeviceListViewController: NSViewController {
             popup.action = #selector(settingsChanged)
         }
         displayPopup.toolTip = "Display to mirror"
-        resolutionPopup.addItems(withTitles: ["Best", "1080p", "720p"])
+        targetPopup.controlSize = .small
+        targetPopup.font = .systemFont(ofSize: 11)
+        targetPopup.target = self
+        targetPopup.action = #selector(targetChosen)
+        targetPopup.toolTip = "Share the whole screen, one app (other windows stay black) or one window — switches live"
+        targetPopup.addItem(withTitle: "Share: Entire screen")
+        resolutionPopup.addItems(withTitles: ["Best", "4K", "1080p", "720p"])
         resolutionPopup.selectItem(at: Self.resolutions.firstIndex(of: Settings.resolution) ?? 0)
-        resolutionPopup.toolTip = "Resolution (Auto = best the display supports)"
+        resolutionPopup.toolTip = "Best = up to 1080p. 4K needs a display that supports it and fast Wi-Fi (~30 Mbit/s); falls back to 1080p"
         bitratePopup.addItems(withTitles: Self.bitrates.map { $0 == 0 ? "Auto quality" : "\($0) Mbit/s" })
         bitratePopup.selectItem(at: Self.bitrates.firstIndex(of: Settings.bitrateMbps) ?? 0)
         bitratePopup.toolTip = "Auto adapts the bitrate to your Wi-Fi (up to \(Settings.autoBitrateMax) Mbit/s); a number keeps it fixed"
@@ -107,7 +128,13 @@ final class DeviceListViewController: NSViewController {
         securityPopup.addItems(withTitles: ["Security: Auto", "Security: Off", "Security: Encrypted", "Security: PIN"])
         securityPopup.selectItem(at: Self.securities.firstIndex(of: Settings.security) ?? 0)
         securityPopup.toolTip = "Auto connects normally and asks for a PIN only if the display insists"
-        for box in [audioCheckbox, testPatternCheckbox, loginCheckbox, muteCheckbox, reconnectCheckbox] {
+        lowLatencyCheckbox.state = Settings.lowLatency ? .on : .off
+        lowLatencyCheckbox.action = #selector(settingsChanged)
+        lowLatencyCheckbox.toolTip = "Halves the delay (about 100 ms instead of 200 ms) — prefers LPCM audio and a smaller buffer; may stutter on weak Wi-Fi"
+        fpsCheckbox.state = Settings.fps == 60 ? .on : .off
+        fpsCheckbox.action = #selector(settingsChanged)
+        fpsCheckbox.toolTip = "Smoother motion if the display supports 60 fps (uses more bandwidth)"
+        for box in [audioCheckbox, testPatternCheckbox, loginCheckbox, muteCheckbox, reconnectCheckbox, lowLatencyCheckbox, fpsCheckbox] {
             box.controlSize = .small
             box.font = .systemFont(ofSize: 11)
             box.target = self
@@ -134,8 +161,10 @@ final class DeviceListViewController: NSViewController {
         row2.spacing = 6
         let row3 = NSStackView(views: [audioCheckbox, muteCheckbox, securityPopup])
         row3.spacing = 8
-        let row4 = NSStackView(views: [testPatternCheckbox, reconnectCheckbox, loginCheckbox])
+        let row4 = NSStackView(views: [lowLatencyCheckbox, fpsCheckbox, testPatternCheckbox])
         row4.spacing = 10
+        let row5 = NSStackView(views: [reconnectCheckbox, loginCheckbox])
+        row5.spacing = 10
 
         updateButton.bezelStyle = .inline
         updateButton.controlSize = .small
@@ -144,15 +173,18 @@ final class DeviceListViewController: NSViewController {
         updateButton.action = #selector(openUpdate)
 
         let logButton = Self.linkButton("Log", self, #selector(openLog))
+        let diagButton = Self.linkButton("Diagnostics", self, #selector(exportDiagnostics))
+        diagButton.toolTip = "Save a zip with the log and system/network info for a bug report"
         let helpButton = Self.linkButton("Help", self, #selector(openHelp))
         let quitButton = Self.linkButton("Quit", self, #selector(quit))
-        let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.displayString) start/stop")
+        let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.toggleMirroring.display) start/stop · \(GlobalHotKey.togglePrivacy.display) pause")
         shortcut.font = .systemFont(ofSize: 10)
         shortcut.textColor = .tertiaryLabelColor
-        let footer = NSStackView(views: [logButton, helpButton, NSView(), shortcut, quitButton])
+        let footer = NSStackView(views: [logButton, diagButton, helpButton, NSView(), quitButton])
+        let shortcutRow = NSStackView(views: [shortcut])
 
-        let stack = NSStackView(views: [titleRow, statusLabel, scrollView, stopButton, ipRow,
-                                        settingsTitle, displayPopup, row2, row3, row4, updateButton, footer])
+        let stack = NSStackView(views: [titleRow, statusLabel, scrollView, controlRow, ipRow,
+                                        settingsTitle, targetPopup, displayPopup, row2, row3, row4, row5, updateButton, shortcutRow, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -173,6 +205,7 @@ final class DeviceListViewController: NSViewController {
             scrollView.heightAnchor.constraint(equalToConstant: 140),
             ipRow.widthAnchor.constraint(equalToConstant: inner),
             displayPopup.widthAnchor.constraint(equalToConstant: inner),
+            targetPopup.widthAnchor.constraint(equalToConstant: inner),
             footer.widthAnchor.constraint(equalToConstant: inner),
             statusLabel.widthAnchor.constraint(equalToConstant: inner),
         ])
@@ -189,7 +222,45 @@ final class DeviceListViewController: NSViewController {
         refreshDisplays()
         refreshLoginCheckbox()
         refreshStatusText()
+        refreshTargets()
         resizeToFit()
+    }
+
+    // Rebuilds the Share menu from the apps and windows on screen right now.
+    private func refreshTargets() {
+        Task { @MainActor in
+            guard let items = try? await ShareableItems.load() else { return }
+            let menu = NSMenu()
+            @MainActor func add(_ title: String, _ target: CaptureTarget?, indent: Bool = false) {
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                item.representedObject = target.map { TargetBox($0) }
+                item.isEnabled = target != nil
+                item.indentationLevel = indent ? 1 : 0
+                menu.addItem(item)
+                if let target, target == currentTarget { targetPopup.select(item) }
+            }
+            add("Share: Entire screen", .screen)
+            menu.addItem(.separator())
+            add("Only one app (others stay black)", nil)
+            for a in items.apps { add(a.name, .app(bundleID: a.bundleID, name: a.name), indent: true) }
+            menu.addItem(.separator())
+            add("Only one window", nil)
+            for w in items.windows.prefix(30) {
+                let title = w.title.count > 40 ? String(w.title.prefix(40)) + "…" : w.title
+                add("\(w.appName) — \(title)", .window(id: w.id, title: w.title), indent: true)
+            }
+            targetPopup.menu = menu
+            if targetPopup.selectedItem?.representedObject == nil { targetPopup.selectItem(at: 0) }
+            for item in menu.items where item.representedObject == nil && !item.isSeparatorItem { item.isEnabled = false }
+            targetPopup.autoenablesItems = false
+        }
+    }
+
+    @objc private func targetChosen() {
+        guard let box = targetPopup.selectedItem?.representedObject as? TargetBox else { return }
+        currentTarget = box.target
+        Settings.shareTarget = box.target
+        onTargetChange?(box.target)
     }
 
     // The popover takes its size from preferredContentSize; derive it from the
@@ -219,9 +290,10 @@ final class DeviceListViewController: NSViewController {
     func setStatus(_ s: MiraController.Status) {
         status = s
         switch s {
-        case .streaming, .connecting: stopButton.isHidden = false
-        default: stopButton.isHidden = true
+        case .streaming, .connecting: controlRow.isHidden = false
+        default: controlRow.isHidden = true
         }
+        if case .streaming = s { privacyButton.isHidden = false } else { privacyButton.isHidden = true; setPrivacy(false) }
         if case .connecting = s { stopButton.title = "Cancel" } else { stopButton.title = "Stop Mirroring" }
         refreshStatusText()
         tableView.reloadData()
@@ -282,6 +354,13 @@ final class DeviceListViewController: NSViewController {
 
     @objc private func stopTapped() { onStopRequested?() }
 
+    @objc private func privacyTapped() { onPrivacyToggle?() }
+
+    func setPrivacy(_ on: Bool) {
+        privacyButton.title = on ? "Resume Screen" : "Pause Screen"
+        privacyButton.contentTintColor = on ? .systemOrange : nil
+    }
+
     @objc private func mirrorTapped(_ sender: NSButton) {
         guard devices.indices.contains(sender.tag) else { return }
         onMirrorRequested?(devices[sender.tag])
@@ -304,6 +383,8 @@ final class DeviceListViewController: NSViewController {
         Settings.security = Self.securities[max(0, securityPopup.indexOfSelectedItem)]
         Settings.muteMac = muteCheckbox.state == .on
         Settings.reconnectOnLaunch = reconnectCheckbox.state == .on
+        Settings.lowLatency = lowLatencyCheckbox.state == .on
+        Settings.fps = fpsCheckbox.state == .on ? 60 : 30
         Settings.audio = audioCheckbox.state == .on
         Settings.testPattern = testPatternCheckbox.state == .on
         let i = displayPopup.indexOfSelectedItem
@@ -321,10 +402,56 @@ final class DeviceListViewController: NSViewController {
     }
 
     @objc private func openUpdate() {
-        NSWorkspace.shared.open(update?.url ?? AppInfo.releasesURL)
+        guard let update else { NSWorkspace.shared.open(AppInfo.releasesURL); return }
+        guard Updater.currentApp != nil else { NSWorkspace.shared.open(update.url); return }
+        let alert = NSAlert()
+        alert.messageText = "Update to Mira \(update.version)?"
+        alert.informativeText = "Mira downloads the release from GitHub, checks its checksum and signature, replaces itself and restarts. Mirroring stops for a moment."
+        alert.addButton(withTitle: "Install and Restart")
+        alert.addButton(withTitle: "Release Notes")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: installUpdate()
+        case .alertSecondButtonReturn: NSWorkspace.shared.open(update.url)
+        default: break
+        }
+    }
+
+    private func installUpdate() {
+        updateButton.isEnabled = false
+        Task { @MainActor in
+            do {
+                guard let release = try await Updater.latest() else { statusLabel.stringValue = "Already up to date"; return }
+                let label = statusLabel
+                let app = try await Updater.install(release) { msg in
+                    DispatchQueue.main.async { label.stringValue = msg }
+                }
+                Updater.relaunch(app)
+                NSApp.terminate(nil)
+            } catch {
+                statusLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                updateButton.isEnabled = true
+            }
+            resizeToFit()
+        }
     }
 
     @objc private func openLog() { NSWorkspace.shared.open(Log.logFileURL) }
+
+    @objc private func exportDiagnostics() {
+        statusLabel.stringValue = "Collecting diagnostics (takes a few seconds)…"
+        Task { @MainActor in
+            do {
+                let url = try await Diagnostics.export()
+                statusLabel.stringValue = "Saved \(url.lastPathComponent) to your Desktop"
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                statusLabel.stringValue = "⚠️ \(error.localizedDescription)"
+            }
+            resizeToFit()
+        }
+    }
 
     @objc private func openHelp() {
         NSWorkspace.shared.open(URL(string: "https://github.com/\(AppInfo.repository)#readme")!)
@@ -376,4 +503,10 @@ extension DeviceListViewController: NSTableViewDataSource, NSTableViewDelegate {
         cell.addSubview(btn)
         return cell
     }
+}
+
+// NSMenuItem.representedObject needs a class.
+private final class TargetBox {
+    let target: CaptureTarget
+    init(_ target: CaptureTarget) { self.target = target }
 }

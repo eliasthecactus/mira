@@ -186,11 +186,13 @@ final class BitstreamTests: XCTestCase {
         XCTAssertEqual(au[12], 0xC0, "constraint_set0/1 flags set on baseline SPS")
     }
 
-    func testConstrainedBaselineOnlyTouchesBaselineSPS() {
-        let high = Data([0x67, 100, 0x00, 0x28])
-        XCTAssertEqual(H264Bitstream.markConstrainedBaseline(high), high)
+    func testConstrainedFlags() {
+        XCTAssertEqual(H264Bitstream.markConstrained(Data([0x67, 100, 0x00, 0x33])), Data([0x67, 100, 0x0C, 0x33]),
+                       "High → Constrained High (constraint_set4/5)")
+        let main = Data([0x67, 77, 0x00, 0x28])
+        XCTAssertEqual(H264Bitstream.markConstrained(main), main, "other profiles untouched")
         let pps = Data([0x68, 66, 0x00])
-        XCTAssertEqual(H264Bitstream.markConstrainedBaseline(pps), pps)
+        XCTAssertEqual(H264Bitstream.markConstrained(pps), pps)
     }
 
     func testSplitAVCC() {

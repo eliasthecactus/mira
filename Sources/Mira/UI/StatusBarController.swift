@@ -19,6 +19,31 @@ final class StatusBarController: NSObject {
         set { listVC.onStopRequested = newValue }
     }
 
+    var onTargetChange: ((CaptureTarget) -> Void)? {
+        get { listVC.onTargetChange }
+        set { listVC.onTargetChange = newValue }
+    }
+
+    var onPrivacyToggle: (() -> Void)? {
+        get { listVC.onPrivacyToggle }
+        set { listVC.onPrivacyToggle = newValue }
+    }
+
+    private var streaming = false
+    private var privacyOn = false
+
+    func setPrivacy(_ on: Bool) {
+        privacyOn = on
+        listVC.setPrivacy(on)
+        updateIcon()
+    }
+
+    private func updateIcon() {
+        let symbol = privacyOn ? "eye.slash" : (streaming ? "rectangle.fill.on.rectangle.fill" : "rectangle.on.rectangle")
+        statusItem.button?.image = NSImage(systemSymbolName: symbol,
+                                           accessibilityDescription: privacyOn ? "Mira (paused)" : streaming ? "Mira (mirroring)" : "Mira")
+    }
+
     override init() {
         super.init()
         popover.contentViewController = listVC
@@ -59,10 +84,8 @@ final class StatusBarController: NSObject {
 
     func setStatus(_ status: MiraController.Status) {
         listVC.setStatus(status)
-        let active: Bool
-        if case .streaming = status { active = true } else { active = false }
-        statusItem.button?.image = NSImage(systemSymbolName: active ? "rectangle.fill.on.rectangle.fill" : "rectangle.on.rectangle",
-                                           accessibilityDescription: active ? "Mira (mirroring)" : "Mira")
+        if case .streaming = status { streaming = true } else { streaming = false; privacyOn = false }
+        updateIcon()
     }
 
     func setStats(_ stats: MiraStats) {

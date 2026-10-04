@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statsTimer: Timer?
     private var updateTimer: Timer?
     private var hotKey: GlobalHotKey?
+    private var privacyHotKey: GlobalHotKey?
     private var pendingAutoConnect: MiracastDevice?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,7 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.startDiscovery()
 
-        hotKey = GlobalHotKey { [weak self] in self?.toggleMirroring() }
+        hotKey = GlobalHotKey(id: 1, keyCode: GlobalHotKey.toggleMirroring.keyCode) { [weak self] in self?.toggleMirroring() }
+        privacyHotKey = GlobalHotKey(id: 2, keyCode: GlobalHotKey.togglePrivacy.keyCode) { [weak self] in self?.togglePrivacy() }
+        statusBar.onPrivacyToggle = { [weak self] in self?.togglePrivacy() }
+        statusBar.onTargetChange = { [weak self] target in self?.controller.setTarget(target) }
 
         if Settings.reconnectOnLaunch, let last = Settings.lastDevice {
             if last.name == last.ipAddress {
@@ -90,6 +94,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         default:
             if let last = Settings.lastDevice { startMirroring(to: last) } else { statusBar.showPopover() }
         }
+    }
+
+    private func togglePrivacy() {
+        let mode = controller.togglePrivacy(Settings.privacyMode)
+        statusBar.setPrivacy(mode != .off)
     }
 
     private static func askForPIN() -> String? {
@@ -152,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             statsTimer?.invalidate()
             statsTimer = nil
+            statusBar.setPrivacy(false)
         }
     }
 }

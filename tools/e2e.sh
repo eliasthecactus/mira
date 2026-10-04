@@ -19,13 +19,18 @@ PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python    # security tests n
 
 swift build >/dev/null || { echo "build failed"; exit 1; }
 
-$PY tools/mock_sink.py --bind 127.0.0.1 --duration "$DURATION" --idr-at 3 --timeout $((DURATION + 25)) \
+$PY tools/mock_sink.py --bind 127.0.0.1 --duration "$DURATION" --idr-at 3 --timeout "${E2E_TIMEOUT:-$((DURATION + 50))}" \
     --out "$OUT/received.ts" "$@" > "$OUT/sink.log" 2>&1 &
 SINK=$!
 sleep 1
 
 "$MIRA" connect 127.0.0.1 $MIRA_ARGS --no-reconnect --dump-ts "$OUT/sent.ts" > "$OUT/mira.log" 2>&1 &
 MIRA_PID=$!
+
+# E2E_PRIVACY=1: pause the screen 3 s into the session for ~2.5 s (via SIGUSR1).
+if [ -n "${E2E_PRIVACY:-}" ]; then
+    (sleep 3; kill -USR1 $MIRA_PID; sleep 2.5; kill -USR1 $MIRA_PID) &
+fi
 
 # Wait for the sink to finish (it tears down after $DURATION s of streaming).
 wait $SINK; SINK_STATUS=$?
@@ -50,6 +55,13 @@ if [ -z "${E2E_SKIP_DECODE:-}" ] && [ -s "$OUT/received.ts" ] && command -v ffpr
     if [ -n "$ERRORS" ]; then echo "$ERRORS"; echo "FAIL: decoder reported errors"; STATUS=1
     else echo "decoded cleanly"; fi
     ffmpeg -v error -y -ss 2 -i "$OUT/received.ts" -frames:v 1 "$OUT/frame.png" && echo "frame: $OUT/frame.png"
+    if [ -n "${E2E_PRIVACY:-}" ]; then
+        echo "── privacy pause check ───────────────────"
+        FREEZE=$(ffmpeg -hide_banner -i "$OUT/received.ts" -vf freezedetect=n=0.001:d=1.5 -map 0:v -f null - 2>&1 | grep -o "freeze_duration: [0-9.]*" | head -1)
+        SILENCE=$(ffmpeg -hide_banner -i "$OUT/received.ts" -af silencedetect=n=-50dB:d=1.5 -map 0:a -f null - 2>&1 | grep -o "silence_duration: [0-9.]*" | head -1)
+        echo "video ${FREEZE:-no freeze}; audio ${SILENCE:-no silence}"
+        if [ -z "$FREEZE" ] || [ -z "$SILENCE" ]; then echo "FAIL: privacy pause not visible in the stream"; STATUS=1; fi
+    fi
 fi
 
 echo "──────────────────────────────────────────"

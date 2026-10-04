@@ -80,7 +80,14 @@ Byte-level details, PIDs and timing are documented in the source files and the R
 - [x] Adaptive bitrate (RTCP RR, send backlog, repeated IDR requests)
 - [x] Extend mode via virtual display (with fallback), sleep prevention, speaker mute, reconnect on launch, ⌃⌥⌘M
 
+### Phase 6c: Beta 3 ✅
+- [x] App/window sharing with live switching; privacy pause; low-latency mode; 60 fps option
+- [x] 4K via H.264 Constrained High / level 5.x; WFD R2 capability probe
+- [x] In-app updater (GitHub, checksum + signature verified), diagnostics export
+- [x] Windows-PC-as-receiver guide
+
 ### Phase 7: Hardware validation ⏳ ← next
+- [ ] Test against a Windows 10/11 PC receiver (no adapter needed)
 - [ ] Join the 4K adapter to Wi-Fi (Windows app) and run the README test-day checklist
 - [ ] Fix whatever the real adapter disagrees with (send `mira.log`)
 - [ ] Measure latency; tune the default buffer and bitrate

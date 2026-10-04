@@ -13,15 +13,21 @@ enum CLI {
       Mira list [--timeout <s>]         Scan the network for Miracast-over-Wi-Fi sinks
       Mira connect <ip|name> [options]  Mirror headless until Ctrl-C
       Mira displays                     List this Mac's displays (for --display)
+      Mira windows                      List apps and windows that can be shared (for --app / --window)
       Mira doctor                       Check firewall/permissions/network for common problems
+      Mira diagnose [--out <file.zip>]  Save a diagnostics bundle (log, doctor, system & network info)
+      Mira update [--check]             Install the newest release from GitHub (app installs only)
       Mira --version
 
     CONNECT OPTIONS
       --test-pattern          Send a generated test pattern + beep (no Screen Recording permission needed)
       --display <n>           Which display to mirror (number from `Mira displays`; default: main)
+      --app <name|bundle-id>  Share only this app's windows (everything else stays black)
+      --window <title|id>     Share only this window (from `Mira windows`)
       --no-audio              Video only
       --audio-codec <c>       auto (default: AAC, else LPCM) | aac | lpcm
-      --resolution <r>        auto (default) | 1080p | 720p
+      --resolution <r>        auto (default, up to 1080p) | 4k | 1080p | 720p
+      --low-latency           Smaller buffer + LPCM audio + low-latency encoder (~100 ms less delay)
       --fps <n>               30 (default) or 60 (only if the sink supports it)
       --bitrate <mbps|auto>   auto (default): adapts to the Wi-Fi, up to --max-bitrate; a number = fixed
       --max-bitrate <mbps>    Ceiling for auto bitrate (default 12)
@@ -36,6 +42,7 @@ enum CLI {
       --rtp-port <n>          Local UDP source port for RTP (default 19000)
       --dump-ts <file.ts>     Also save the exact MPEG-TS stream sent (play with ffplay)
       --no-reconnect          Exit instead of retrying when a working session drops
+      --probe-wfd2            Also ask the display for Miracast 2 / vendor capabilities (logged; for diagnostics)
       --verbose               Print full RTSP/MICE messages
 
     Log file: \(Log.logFileURL.path)
@@ -60,9 +67,45 @@ enum CLI {
             case "doctor":
                 Doctor.run()
                 exit(0)
+            case "diagnose":
+                var out: URL?
+                if let i = args.firstIndex(of: "--out"), i + 1 < args.count { out = URL(fileURLWithPath: args[i + 1]) }
+                var result: Result<URL, Error>?
+                Task { do { result = .success(try await Diagnostics.export(to: out)) } catch { result = .failure(error) } }
+                while result == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+                switch result! {
+                case .success(let url): print("Saved \(url.path)\nAttach it to a GitHub issue: \(AppInfo.releasesURL.deletingLastPathComponent().appendingPathComponent("issues/new/choose"))")
+                case .failure(let e): FileHandle.standardError.write(Data("error: \(e.localizedDescription)\n".utf8)); exit(1)
+                }
+                exit(0)
             case "displays":
                 for (i, d) in DisplayInfo.all().enumerated() { print("  \(i + 1)  \(d.label)") }
                 exit(0)
+            case "windows":
+                let items = try shareableItems()
+                print("Apps (use --app <name>):")
+                for a in items.apps { print("  \(a.name)\t\(a.bundleID)\t\(a.windowCount) window\(a.windowCount == 1 ? "" : "s")") }
+                print("\nWindows (use --window <id or title>):")
+                for w in items.windows { print("  \(w.id)\t\(w.appName) — \(w.title)  (\(Int(w.size.width))×\(Int(w.size.height)))") }
+                exit(0)
+            case "update":
+                let checkOnly = args.contains("--check")
+                var result: Result<String, Error>?
+                Task {
+                    do {
+                        guard let r = try await Updater.latest(includePrereleases: args.contains("--beta") ? true : nil) else {
+                            result = .success("Mira \(AppInfo.version) is the newest version."); return
+                        }
+                        if checkOnly { result = .success("Mira \(r.version) is available: \(r.page)"); return }
+                        let app = try await Updater.install(r) { print($0) }
+                        result = .success("Updated to \(r.version) at \(app.path). Restart Mira to use it.")
+                    } catch { result = .failure(error) }
+                }
+                while result == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+                switch result! {
+                case .success(let msg): print(msg); exit(0)
+                case .failure(let e): FileHandle.standardError.write(Data("error: \(e.localizedDescription)\n".utf8)); exit(1)
+                }
             case "--version", "version":
                 print("Mira \(AppInfo.version)")
                 exit(0)
@@ -143,6 +186,18 @@ enum CLI {
             let a = args[i]
             switch a {
             case "--test-pattern": opts.testPattern = true
+            case "--app":
+                let q = try value(a)
+                guard let app = try shareableItems().app(matching: q) else {
+                    throw ParseError(description: "No running app with a window matches “\(q)” (see `Mira windows`)")
+                }
+                opts.target = .app(bundleID: app.bundleID, name: app.name)
+            case "--window":
+                let q = try value(a)
+                guard let w = try shareableItems().window(matching: q) else {
+                    throw ParseError(description: "No window matches “\(q)” (see `Mira windows`)")
+                }
+                opts.target = .window(id: w.id, title: w.title)
             case "--display":
                 let n: Int = try number(a)
                 let displays = DisplayInfo.all()
@@ -160,8 +215,8 @@ enum CLI {
             case "--no-reconnect": opts.autoReconnect = false
             case "--resolution":
                 let v = try value(a)
-                guard let r = StreamPreferences.ResolutionChoice(rawValue: v) else {
-                    throw ParseError(description: "--resolution must be auto, 1080p or 720p")
+                guard let r = StreamPreferences.ResolutionChoice(rawValue: v.lowercased()) else {
+                    throw ParseError(description: "--resolution must be auto, 4k, 1080p or 720p")
                 }
                 opts.prefs.resolution = r
             case "--fps": opts.prefs.fps = try number(a)
@@ -180,6 +235,10 @@ enum CLI {
                 guard let mbps = Double(v), mbps > 0.5, mbps <= 40 else { throw ParseError(description: "--max-bitrate in Mbit/s, e.g. 12") }
                 maxBitrate = Int(mbps * 1_000_000)
             case "--extend": opts.extendDisplay = true
+            case "--probe-wfd2": opts.prefs.extraM3Parameters = StreamPreferences.wfd2ProbeParameters
+            case "--low-latency":
+                opts.lowLatency = true
+                opts.prefs.lowLatency = true
             case "--keep-mac-audio": opts.muteMac = false
             case "--security":
                 let v = try value(a)
@@ -211,19 +270,25 @@ enum CLI {
         Log.info("Mira", "Mira \(AppInfo.version) — log file: \(Log.logFileURL.path)")
 
         let controller = MiraController(options: opts)
+        let console = ConsoleCommands(controller: controller)
         // PIN entry in the terminal, if the display asks for one and --pin wasn't given.
         controller.pinProvider = { completion in
-            DispatchQueue.global().async {
-                FileHandle.standardError.write(Data("\n🔑 Enter the PIN shown on the TV: ".utf8))
-                completion(readLine())
-            }
+            FileHandle.standardError.write(Data("\n🔑 Enter the PIN shown on the TV: ".utf8))
+            console.awaitLine(completion)
         }
+        console.start()
+
+        // SIGUSR1 toggles the privacy pause (for scripts / hotkey tools).
+        let usr1 = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        usr1.setEventHandler { console.togglePrivacy(.freeze) }
+        signal(SIGUSR1, SIG_IGN)
+        usr1.resume()
         var everStreamed = false
         controller.onStatusChanged = { status in
             switch status {
             case .streaming(let d, let res):
                 everStreamed = true
-                Log.info("Mira", "✅ Mirroring to \(d.name) at \(res). Press Ctrl-C to stop.")
+                Log.info("Mira", "✅ Mirroring to \(d.name) at \(res). Commands: p = pause screen (freeze), b = pause (black), q = stop. Ctrl-C also stops.")
             case .failed:
                 // The controller already logged the reason.
                 Log.info("Mira", "❌ Failed. Full log: \(Log.logFileURL.path)")
@@ -285,6 +350,70 @@ enum CLI {
         }
         RunLoop.main.run()
         exit(0)
+    }
+
+    // ScreenCaptureKit is async; the CLI resolves targets before its run loop starts.
+    static func shareableItems() throws -> ShareableItems {
+        var result: Result<ShareableItems, Error>?
+        Task { do { result = .success(try await ShareableItems.load()) } catch { result = .failure(error) } }
+        while result == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        switch result! {
+        case .success(let items): return items
+        case .failure(let e): throw ParseError(description: "Can't list windows (Screen Recording permission?): \(e.localizedDescription)")
+        }
+    }
+
+    // Reads terminal lines: answers a pending PIN prompt, otherwise runs commands.
+    final class ConsoleCommands: @unchecked Sendable {
+        private let controller: MiraController
+        private let lock = NSLock()
+        private var pending: ((String?) -> Void)?
+
+        init(controller: MiraController) { self.controller = controller }
+
+        func start() {
+            Thread.detachNewThread { [self] in
+                while let line = readLine() {
+                    let waiter: ((String?) -> Void)? = lock.withLock { defer { pending = nil }; return pending }
+                    if let waiter { waiter(line); continue }
+                    let cmd = line.trimmingCharacters(in: .whitespaces)
+                    let lower = cmd.lowercased()
+                    switch lower {
+                    case "p": DispatchQueue.main.async { self.togglePrivacy(.freeze) }
+                    case "b": DispatchQueue.main.async { self.togglePrivacy(.black) }
+                    case "q": DispatchQueue.main.async { kill(getpid(), SIGINT) }
+                    case "screen": controller.setTarget(.screen)
+                    case "": break
+                    default:
+                        if lower.hasPrefix("app ") || lower.hasPrefix("window ") {
+                            let isApp = lower.hasPrefix("app ")
+                            let query = String(cmd.dropFirst(isApp ? 4 : 7))
+                            Task {
+                                guard let items = try? await ShareableItems.load() else { return }
+                                if isApp, let a = items.app(matching: query) {
+                                    self.controller.setTarget(.app(bundleID: a.bundleID, name: a.name))
+                                } else if !isApp, let w = items.window(matching: query) {
+                                    self.controller.setTarget(.window(id: w.id, title: w.title))
+                                } else {
+                                    FileHandle.standardError.write(Data("Nothing matches “\(query)” (see `Mira windows`)\n".utf8))
+                                }
+                            }
+                        } else {
+                            FileHandle.standardError.write(Data("Commands: p = pause (freeze), b = pause (black), screen, app <name>, window <title>, q = stop\n".utf8))
+                        }
+                    }
+                }
+            }
+        }
+
+        func awaitLine(_ completion: @escaping (String?) -> Void) {
+            lock.withLock { pending = completion }
+        }
+
+        func togglePrivacy(_ mode: MediaPipeline.PrivacyMode) {
+            let now = controller.togglePrivacy(mode)
+            Log.info("Mira", now == .off ? "▶️  Screen resumed" : "⏸  Screen paused (\(now.rawValue)) — type p again to resume")
+        }
     }
 
     // Status callbacks run on the controller's queue; exiting right there would kill the

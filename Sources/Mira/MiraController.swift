@@ -12,6 +12,7 @@ struct MiraStats {
     var encrypted = false
     var extended = false
     var extendFailure: String? = nil
+    var privacy: MediaPipeline.PrivacyMode = .off
 }
 
 // Orchestrates one projection:
@@ -38,6 +39,8 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         var adaptiveBitrate = true
         var extendDisplay = false
         var muteMac = true
+        var lowLatency = false
+        var target: CaptureTarget = .screen
     }
 
     // auto = plain session (any compliant sink accepts it); if the display ignores it,
@@ -147,6 +150,34 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         }
     }
 
+    // Changes what's shared; applies live if a session is running.
+    func setTarget(_ target: CaptureTarget, completion: ((Error?) -> Void)? = nil) {
+        queue.async {
+            self.options.target = target
+            guard let pipeline = self.pipeline else { completion?(nil); return }
+            Task {
+                do { try await pipeline.setTarget(target); completion?(nil) }
+                catch { Log.warn("Mira", error.localizedDescription); completion?(error) }
+            }
+        }
+    }
+
+    // Privacy pause: `mode` .freeze/.black hides the Mac's screen, .off resumes.
+    func setPrivacy(_ mode: MediaPipeline.PrivacyMode) {
+        queue.async { self.pipeline?.setPrivacy(mode) }
+    }
+
+    // Toggles between off and `mode`; returns the new state.
+    @discardableResult
+    func togglePrivacy(_ mode: MediaPipeline.PrivacyMode = .freeze) -> MediaPipeline.PrivacyMode {
+        queue.sync {
+            guard let pipeline else { return .off }
+            let next: MediaPipeline.PrivacyMode = pipeline.privacyMode == .off ? mode : .off
+            pipeline.setPrivacy(next)
+            return next
+        }
+    }
+
     // Blocks until the sink has been told to stop (used on quit).
     func stopAndWait(timeout: TimeInterval = 2) {
         stop()
@@ -164,15 +195,20 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             lastStatsTime = now; lastFrames = s.framesEncoded; lastBytes = s.bytesSent
             return MiraStats(isStreaming: true, device: device, resolution: res, fps: fps, kbps: kbps,
                              targetKbps: s.bitrate / 1000, encrypted: s.encrypted,
-                             extended: s.extended, extendFailure: extendFailure)
+                             extended: s.extended, extendFailure: extendFailure,
+                             privacy: pipeline.privacyMode)
         }
     }
 
-    static func defaultDelay(_ audio: WFDAudioCodec?) -> Double {
-        switch audio?.format {
-        case "AAC":  return 0.2
-        case "LPCM": return 0.15
-        default:     return 0.12
+    // Sink buffer (PTS − PCR). Low-latency mode trims it to what encode + capture need.
+    static func defaultDelay(_ audio: WFDAudioCodec?, lowLatency: Bool = false) -> Double {
+        switch (audio?.format, lowLatency) {
+        case ("AAC", false):  return 0.2
+        case ("AAC", true):   return 0.15      // AAC's ~65 ms lookahead sets the floor
+        case ("LPCM", false): return 0.15
+        case ("LPCM", true):  return 0.1       // ScreenCaptureKit delivers audio up to ~70 ms late
+        case (_, false):      return 0.12
+        case (_, true):       return 0.05      // encode takes ~15 ms with the low-latency encoder
         }
     }
 
@@ -242,8 +278,10 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
                                sourceID: Self.sourceID, security: security, queue: self.queue)
             m.onSourceReady = { [weak self] in
                 guard let self, gen == self.generation else { return }
-                // auto: a short wait for the plain attempt, since a PIN retry follows.
-                let wait: TimeInterval = security != .none ? 20 : (self.options.security == .auto ? 10 : 15)
+                // Receivers like Windows' "Projecting to this PC" may first ask the person at
+                // the screen to accept, so allow time for that before giving up / trying PIN.
+                let wait: TimeInterval = 30
+                Log.info("Mira", "Waiting for \(device.name) to connect back — if the display shows an \"allow projection\" prompt, accept it")
                 self.session?.armConnectTimeout(wait)
             }
             m.pinProvider = { [weak self] completion in
@@ -271,15 +309,19 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
 
     private func startPipeline(device: MiracastDevice, format: WFDNegotiatedFormat, sinkIP: String,
                                rtpPort: UInt16, rtcpPort: UInt16?, gen: Int) {
+        // 4K needs about 2.5× the bits of 1080p for the same quality.
+        let maxBitrate = options.adaptiveBitrate && format.resolution.is4K ? options.prefs.bitrate * 5 / 2 : options.prefs.bitrate
         let cfg = MediaPipeline.Config(format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort,
-                                       localRTPPort: options.localRTPPort, bitrate: options.prefs.bitrate,
+                                       localRTPPort: options.localRTPPort, bitrate: maxBitrate,
                                        fps: format.resolution.fps, testPattern: options.testPattern,
                                        displayID: options.displayID,
                                        dumpTS: options.dumpTS,
-                                       ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio),
+                                       ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio, lowLatency: options.lowLatency),
                                        adaptiveBitrate: options.adaptiveBitrate,
                                        extendedDisplayID: extended?.displayID,
                                        muteMac: options.muteMac,
+                                       lowLatency: options.lowLatency,
+                                       target: options.target,
                                        tunnel: currentSecurity == .none ? nil : mice?.tunnel)
         let p = MediaPipeline(config: cfg)
         p.onFatalError = { [weak self] err in

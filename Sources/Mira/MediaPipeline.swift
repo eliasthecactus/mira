@@ -9,6 +9,9 @@ import CoreVideo
 // Wi-Fi jitter. Lower = less latency, higher = fewer stutters.
 final class MediaPipeline: @unchecked Sendable {   // mux state is confined to muxQueue
 
+    // Privacy pause: what the TV shows while the Mac's screen is hidden.
+    enum PrivacyMode: String, CaseIterable { case off, freeze, black }
+
     struct Config {
         var format: WFDNegotiatedFormat
         var sinkIP: String
@@ -25,6 +28,8 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         var minBitrate = 1_500_000
         var extendedDisplayID: CGDirectDisplayID? = nil   // virtual monitor to stream (extend mode)
         var muteMac = true                  // silence the Mac's speakers while sending system audio
+        var lowLatency = false
+        var target: CaptureTarget = .screen
         var tunnel: DTLSTunnel? = nil       // MS-MICE stream encryption, when negotiated
     }
 
@@ -70,6 +75,10 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     private var controlTimer: DispatchSourceTimer?
     private let sleepGuard = SleepGuard()
     private let muter = MacAudioMuter()
+    private let privacyLock = NSLock()
+    private var privacy: PrivacyMode = .off
+    private var privacyFrame: CVPixelBuffer?
+    var privacyMode: PrivacyMode { privacyLock.withLock { privacy } }
 
     var stats: Stats {
         var s = statsLock.withLock { _stats }
@@ -92,7 +101,9 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         let r = config.format.resolution
         encoder = H264Encoder(config: .init(width: Int32(r.width), height: Int32(r.height),
                                             fps: Int32(config.fps), bitrate: config.bitrate,
-                                            levelBit: config.format.levelBit))
+                                            levelBit: config.format.levelBit,
+                                            highProfile: config.format.isHighProfile,
+                                            lowLatency: config.lowLatency))
         switch config.format.audio?.format {
         case "AAC":  muxer = MPEGTSMuxer(audio: .aac)
         case "LPCM": muxer = MPEGTSMuxer(audio: .lpcm)
@@ -166,13 +177,17 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             let cap = ScreenCapturer(config: .init(width: r.width, height: r.height, fps: config.fps,
                                                    captureAudio: config.format.audio != nil,
                                                    displayID: captureDisplay,
-                                                   requireDisplay: config.extendedDisplayID != nil))
+                                                   requireDisplay: config.extendedDisplayID != nil,
+                                                   target: config.extendedDisplayID == nil ? config.target : .screen))
             cap.onStopped = { [weak self] err in if let err { self?.onFatalError?(err) } }
             src = cap
         }
         if let audioSrc = src as? AudioSource, let enc = audioEncoder {
             audioSrc.onAudio = { [weak self] samples, pts in
-                self?.audioQueue.async { enc.encode(interleaved: samples, pts: pts) }
+                guard let self else { return }
+                // Privacy pause silences audio but keeps the timeline running.
+                let out = self.privacyMode == .off ? samples : [Float](repeating: 0, count: samples.count)
+                self.audioQueue.async { enc.encode(interleaved: out, pts: pts) }
             }
         }
         try await src.start()
@@ -210,6 +225,46 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     }
 
     func forceKeyframe() { encoder.forceKeyframe() }
+
+    // Live switch between screen / app / window.
+    func setTarget(_ target: CaptureTarget) async throws {
+        guard let capturer = source as? ScreenCapturer else { return }
+        try await capturer.updateTarget(target)
+        encoder.forceKeyframe()
+    }
+
+    var currentTarget: CaptureTarget { (source as? ScreenCapturer)?.target ?? .screen }
+
+    // Freeze (last frame) or black out what the TV shows, and silence audio.
+    func setPrivacy(_ mode: PrivacyMode) {
+        let frame: CVPixelBuffer?
+        switch mode {
+        case .off: frame = nil
+        case .freeze: frame = source?.currentFrame() ?? Self.blackFrame(config.format.resolution)
+        case .black: frame = Self.blackFrame(config.format.resolution)
+        }
+        privacyLock.withLock {
+            privacy = mode
+            privacyFrame = frame
+        }
+        encoder.forceKeyframe()      // switch over immediately, in either direction
+        Log.info("Pipeline", mode == .off ? "Privacy pause off" : "Privacy pause on (\(mode.rawValue))")
+    }
+
+    static func blackFrame(_ r: WFDResolution) -> CVPixelBuffer? {
+        var pb: CVPixelBuffer?
+        let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary
+        guard CVPixelBufferCreate(nil, r.width, r.height, kCVPixelFormatType_32BGRA, attrs, &pb) == kCVReturnSuccess,
+              let pb else { return nil }
+        CVPixelBufferLockBaseAddress(pb, [])
+        if let base = CVPixelBufferGetBaseAddress(pb) {
+            // BGRA (0,0,0,255): opaque black
+            let count = CVPixelBufferGetDataSize(pb) / 4
+            base.bindMemory(to: UInt32.self, capacity: count).initialize(repeating: 0xFF00_0000, count: count)
+        }
+        CVPixelBufferUnlockBaseAddress(pb, [])
+        return pb
+    }
 
     // The sink asked for an IDR: its decoder lost data — also a sign the link is struggling.
     func sinkRequestedKeyframe() {
@@ -257,7 +312,8 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         t.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(2))
         t.setEventHandler { [weak self] in
             guard let self, let source = self.source else { return }
-            guard let frame = source.currentFrame() else {
+            let held = self.privacyLock.withLock { self.privacy == .off ? nil : self.privacyFrame }
+            guard let frame = held ?? source.currentFrame() else {
                 let now = Self.hostNow()
                 if now - self.baseHost > 3, now - self.lastNoFrameWarning > 10 {
                     self.lastNoFrameWarning = now

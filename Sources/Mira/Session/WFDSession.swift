@@ -363,12 +363,12 @@ final class WFDSession {
     private func maybeSendM3() {
         guard gotM1Reply, gotM2, !sentM3 else { return }
         sentM3 = true
-        let body = [
+        let body = ([
             "wfd_video_formats",
             "wfd_audio_codecs",
             "wfd_client_rtp_ports",
             "wfd_content_protection",
-        ].joined(separator: "\r\n") + "\r\n"
+        ] + prefs.extraM3Parameters).joined(separator: "\r\n") + "\r\n"
         sendRequest("GET_PARAMETER", name: "M3 (GET_PARAMETER)", body: body) { [weak self] resp in
             guard let self else { return }
             guard resp.statusCode == 200 else {
@@ -385,7 +385,7 @@ final class WFDSession {
             }
             let n = WFDNegotiatedFormat.choose(sink: caps, prefs: self.prefs)
             self.negotiated = n
-            Log.info("RTSP", "Chose \(n.resolution), H.264 CBP level bit 0x\(String(n.levelBit, radix: 16)), audio: \(n.audio?.descriptor ?? "none")")
+            Log.info("RTSP", "Chose \(n.resolution), H.264 \(n.isHighProfile ? "Constrained High" : "Constrained Baseline") level bit 0x\(String(n.levelBit, radix: 16)), audio: \(n.audio?.descriptor ?? "none")")
             self.sendM4(n)
         }
     }
@@ -424,6 +424,11 @@ final class WFDSession {
             Log.warn("RTSP", "Sink sent no parsable wfd_video_formats: \(caps.raw["wfd_video_formats"] ?? "(missing)")")
         }
         Log.info("RTSP", "Sink audio: \(caps.audioCodecs.map(\.descriptor).joined(separator: ", ").nilIfEmpty ?? "none"); RTP port \(caps.rtpPort0)")
+        // Anything beyond the basics (R2 codecs, vendor extensions) — useful for bring-up.
+        let known: Set<String> = ["wfd_video_formats", "wfd_audio_codecs", "wfd_client_rtp_ports", "wfd_content_protection"]
+        for (name, value) in caps.raw.sorted(by: { $0.key < $1.key }) where !known.contains(name) {
+            Log.info("RTSP", "Sink \(name): \(value.count > 200 ? String(value.prefix(200)) + "…" : value)")
+        }
     }
 
     // MARK: - Keep-alive (M16)

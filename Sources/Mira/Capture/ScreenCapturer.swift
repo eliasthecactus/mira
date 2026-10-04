@@ -28,6 +28,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         var captureAudio = true
         var displayID: CGDirectDisplayID? = nil   // nil = main display
         var requireDisplay = false                 // fail instead of falling back (virtual display)
+        var target: CaptureTarget = .screen
     }
 
     var onAudio: ((_ interleaved: [Float], _ pts: Double) -> Void)?
@@ -35,6 +36,8 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
 
     private var stream: SCStream?
     private let config: Config
+    private var display: SCDisplay?
+    private(set) var target: CaptureTarget = .screen
     private let videoQueue = DispatchQueue(label: "mira.capture.video", qos: .userInteractive)
     private let audioQueue = DispatchQueue(label: "mira.capture.audio", qos: .userInteractive)
     private let lock = NSLock()
@@ -68,9 +71,16 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
             throw CaptureError.noDisplayFound
         }
 
-        // Don't mirror Mira's own windows (the menu bar popover).
-        let ownApp = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
-        let filter = SCContentFilter(display: display, excludingApplications: ownApp, exceptingWindows: [])
+        self.display = display
+        let filter: SCContentFilter
+        do {
+            filter = try makeFilter(config.target, content: content, display: display)
+            target = config.target
+        } catch CaptureError.targetGone(let why) {
+            Log.warn("Capture", "Can't share \(config.target) (\(why)); sharing the entire screen instead")
+            filter = try makeFilter(.screen, content: content, display: display)
+            target = .screen
+        }
 
         let cfg = SCStreamConfiguration()
         cfg.width  = config.width
@@ -79,6 +89,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         cfg.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         cfg.scalesToFit = true
+        if #available(macOS 14.0, *) { cfg.preservesAspectRatio = true }   // letterbox windows/apps
         cfg.showsCursor = true
         cfg.queueDepth = 6
         cfg.capturesAudio = config.captureAudio
@@ -93,7 +104,43 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         }
         try await s.startCapture()
         stream = s
-        Log.info("Capture", "Display \(display.displayID) (\(display.width)×\(display.height)) → \(config.width)×\(config.height) @\(config.fps)fps, audio \(config.captureAudio ? "on" : "off")")
+        Log.info("Capture", "Display \(display.displayID) (\(display.width)×\(display.height)) → \(config.width)×\(config.height) @\(config.fps)fps, audio \(config.captureAudio ? "on" : "off"), sharing \(target)")
+    }
+
+    // Switches what's shared without restarting the stream (the TV doesn't notice).
+    func updateTarget(_ newTarget: CaptureTarget) async throws {
+        guard let stream, let display else { return }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let filter = try makeFilter(newTarget, content: content, display: display)
+        try await stream.updateContentFilter(filter)
+        target = newTarget
+        Log.info("Capture", "Now sharing \(newTarget)")
+    }
+
+    private func makeFilter(_ target: CaptureTarget, content: SCShareableContent, display: SCDisplay) throws -> SCContentFilter {
+        let me = ProcessInfo.processInfo.processIdentifier
+        switch target {
+        case .screen:
+            // Don't mirror Mira's own windows (the menu bar popover).
+            let ownApp = content.applications.filter { $0.processID == me }
+            return SCContentFilter(display: display, excludingApplications: ownApp, exceptingWindows: [])
+        case .app(let bundleID, let name):
+            guard let app = content.applications.first(where: { $0.bundleIdentifier == bundleID }) else {
+                throw CaptureError.targetGone("\(name) isn't running")
+            }
+            // Use the display that holds most of the app's windows.
+            let windows = content.windows.filter { $0.owningApplication?.bundleIdentifier == bundleID && $0.windowLayer == 0 }
+            let best = content.displays.max { a, b in
+                windows.reduce(0) { $0 + $1.frame.intersection(a.frame).width * $1.frame.intersection(a.frame).height }
+                    < windows.reduce(0) { $0 + $1.frame.intersection(b.frame).width * $1.frame.intersection(b.frame).height }
+            } ?? display
+            return SCContentFilter(display: best, including: [app], exceptingWindows: [])
+        case .window(let id, let title):
+            guard let window = content.windows.first(where: { $0.windowID == id }) else {
+                throw CaptureError.targetGone("the window “\(title)” is closed")
+            }
+            return SCContentFilter(desktopIndependentWindow: window)
+        }
     }
 
     func stop() {
@@ -107,6 +154,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
     enum CaptureError: LocalizedError {
         case permissionDenied(Error)
         case noDisplayFound
+        case targetGone(String)
 
         var errorDescription: String? {
             switch self {
@@ -114,6 +162,8 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
                 return "Screen Recording permission missing (\(e.localizedDescription)). Grant it in System Settings → Privacy & Security → Screen & System Audio Recording to the app running Mira (e.g. Terminal), then restart it."
             case .noDisplayFound:
                 return "No display found to capture"
+            case .targetGone(let why):
+                return "Can't share that: \(why)"
             }
         }
     }

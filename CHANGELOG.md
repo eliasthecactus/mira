@@ -2,6 +2,22 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.3]
+
+### Added
+- **Share one app or one window** instead of the whole screen (everything else stays black), switchable live during a session. `--app`, `--window`, `mira windows`.
+- **Privacy pause** (⌃⌥⌘P, menu button, `p` in the CLI, `SIGUSR1`): freezes or blanks the TV and silences audio, e.g. while typing a password.
+- **Low-latency mode:** about 100 ms instead of 200 ms (LPCM audio, smaller buffer, VideoToolbox low-latency rate control). `--low-latency`.
+- **4K:** 3840×2160 with H.264 (Constrained High, level 5.1/5.2) when the display advertises it. `--resolution 4k`; auto quality goes up to 30 Mbit/s for 4K. `--probe-wfd2` logs the display's Miracast 2 capabilities.
+- **60 fps** option in the menu.
+- **In-app updates:** downloads the newest GitHub release, verifies checksum and signature, replaces the app and restarts. `mira update`.
+- **Diagnostics export:** one zip with log, doctor output, system/network info and crash reports. `mira diagnose`.
+- **Windows PC as receiver:** setup guide in the README, and a longer wait for Windows' "allow projection" prompt.
+- The log rotates at 10 MB.
+
+### Changed
+- The Constrained Baseline/High flags are set in the SPS to match what Mira signals in the negotiation.
+
 ## [0.2.0-beta.2]
 
 Still untested with a real Microsoft 4K Wireless Display Adapter.
