@@ -2,16 +2,16 @@ import Foundation
 import dnssd
 
 // Finds Miracast-over-Infrastructure sinks. Per [MS-MICE] a sink registers
-// "<friendly name>._display._tcp.local" (SRV → port 7250) with a TXT record
+// "<friendly name>._display._tcp.local" (SRV -> port 7250) with a TXT record
 // "container_id=<GUID>". The Microsoft 4K Wireless Display Adapter only does this
 // once it has been joined to your Wi-Fi network with Microsoft's app.
 //
-// Uses the DNS-SD API directly (browse → resolve → getaddrinfo on the interface
+// Uses the DNS-SD API directly (browse -> resolve -> getaddrinfo on the interface
 // the service was seen on). Network.framework's resolution follows the default
 // route, so with a VPN connected it never resolves LAN services.
 //
 // Note: if macOS Local Network access is denied for Mira, the browse simply never
-// reports anything — there is no error to detect. The UI explains this when
+// reports anything - there is no error to detect. The UI explains this when
 // nothing turns up.
 final class DeviceBrowser: @unchecked Sendable {   // all state confined to `queue`
     static let serviceType = "_display._tcp"
@@ -23,7 +23,7 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
     private var browseRef: DNSServiceRef?
     private var resolutions: [ObjectIdentifier: Resolution] = [:]
 
-    // One in-flight resolve → address lookup for a service seen on one interface.
+    // One in-flight resolve -> address lookup for a service seen on one interface.
     private final class Resolution {
         let name: String
         let interfaceIndex: UInt32
@@ -80,11 +80,11 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
         }
     }
 
-    // MARK: - Browse → resolve → address (all on `queue`)
+    // MARK: - Browse -> resolve -> address (all on `queue`)
 
     private func browseFailed(_ err: DNSServiceErrorType) {
         if err == kDNSServiceErr_PolicyDenied {
-            Log.error("Discovery", "macOS denied local network access. Allow Mira in System Settings → Privacy & Security → Local Network, then restart it.")
+            Log.error("Discovery", "macOS denied local network access. Allow Mira in System Settings -> Privacy & Security -> Local Network, then restart it.")
         } else {
             Log.error("Discovery", "Browse error \(err)")
         }
@@ -110,7 +110,7 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
                 me.finish(r, error: "resolve error \(err)")
                 return
             }
-            Log.debug("Discovery", "resolved \(r.name) → \(String(cString: host!))")
+            Log.debug("Discovery", "resolved \(r.name) -> \(String(cString: host!))")
             r.port = UInt16(bigEndian: port)
             r.containerID = DeviceBrowser.txtValue("container_id", txtLen, txt)
             me.lookupAddress(r, host: String(cString: host!))

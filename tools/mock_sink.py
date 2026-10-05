@@ -4,13 +4,13 @@ Mock Miracast-over-Infrastructure (MS-MICE) sink for testing Mira without hardwa
 
 It behaves like a MICE receiver such as the Microsoft 4K Wireless Display Adapter:
   1. listens on TCP 7250 for SOURCE_READY
-  2. connects back to the source's RTSP port and plays the sink side of WFD M1–M7
+  2. connects back to the source's RTSP port and plays the sink side of WFD M1-M7
   3. receives RTP/MPEG-TS on UDP and validates it (RTP headers, sequence numbers,
      TS sync, continuity counters, PAT/PMT, PCR interval, PTS headroom)
   4. optionally writes the TS to a file and/or pipes it to ffplay
 
 Exit status is 0 only if the handshake completed, media arrived, and no stream
-errors were detected — so it doubles as an end-to-end test.
+errors were detected - so it doubles as an end-to-end test.
 
   python3 tools/mock_sink.py --duration 10 --out /tmp/mira.ts
   python3 tools/mock_sink.py --play            # watch it live with ffplay
@@ -21,6 +21,7 @@ import hashlib
 import re
 import random
 import shutil
+import unicodedata
 import struct
 import subprocess
 import sys
@@ -42,7 +43,10 @@ VIDEO_PID, AUDIO_PID, PMT_PID = 0x1011, 0x1100, 0x0100
 
 
 def log(tag, msg):
-    print(f"{time.strftime('%H:%M:%S')} [{tag}] {msg}", flush=True)
+    # ASCII-only output: transliterate names (e.g. curly apostrophes), replace the rest.
+    text = unicodedata.normalize("NFKD", f"{time.strftime('%H:%M:%S')} [{tag}] {msg}")
+    text = text.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
+    print(text.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
 # ---------------------------------------------------------------- MICE ----
@@ -529,14 +533,14 @@ class MockSink:
                 self.done.set()
                 return False
             t = parse_tlvs(plain)
-            log("MICE", f"   (TLVArray of command {cmd} decrypted: {len(msg['body'])} → {len(plain)} bytes)")
+            log("MICE", f"   (TLVArray of command {cmd} decrypted: {len(msg['body'])} -> {len(plain)} bytes)")
 
         if cmd == 4:                                            # SESSION_REQUEST
             self.session_options = t.get(5, b"\x00")[0]
             log("MICE", f"<- SESSION_REQUEST name='{decode_name(t.get(0, b''))}' options=0x{self.session_options:02x}")
             if self.session_options & 0x02:
                 self.pin = self.a.pin or "".join(random.choice("0123456789") for _ in range(8))
-                log("MICE", f"   📺 PIN shown on the TV: {self.pin}")
+                log("MICE", f"   PIN shown on the TV: {self.pin}")
             if self.session_options & 0x02 and not self.session_options & 0x01:
                 log("FAIL", "SinkDisplaysPin set without UseDtlsStreamEncryption (spec: bit A MUST be set)")
         elif cmd == 3:                                          # SECURITY_HANDSHAKE
@@ -587,13 +591,13 @@ class MockSink:
             if self.ok:
                 self.done.set()
             else:
-                log("MICE", "   (no session was running — waiting for the source to try again)")
+                log("MICE", "   (no session was running - waiting for the source to try again)")
                 return False
         else:
             log("MICE", f"<- command {cmd} (ignored)")
         return True
 
-    # RTCP receiver reports (RFC 3550 §6.4.2), so the source's adaptive bitrate has data.
+    # RTCP receiver reports (RFC 3550 sec. 6.4.2), so the source's adaptive bitrate has data.
     def note_rtp(self, data):
         if len(data) < 12:
             return
@@ -694,7 +698,7 @@ class MockSink:
             assert r["start"].startswith("RTSP/1.0 200"), "PLAY failed"
             self.ok = True
             self.play_started = time.monotonic()
-            log("Sink", "PLAY acknowledged — receiving media")
+            log("Sink", "PLAY acknowledged - receiving media")
             if self.a.idr_at:
                 asyncio.create_task(self.idr_later(c, session))
             if self.a.duration:
@@ -734,7 +738,7 @@ class MockSink:
 
     async def teardown_later(self, c, session):
         await asyncio.sleep(self.a.duration)
-        log("Sink", f"{self.a.duration}s elapsed — sending TEARDOWN")
+        log("Sink", f"{self.a.duration}s elapsed - sending TEARDOWN")
         c.request("TEARDOWN", "rtsp://localhost/wfd1.0/streamid=0", [("Session", session)])
         await asyncio.sleep(0.5)
         self.done.set()

@@ -3,7 +3,7 @@ import XCTest
 
 final class MPEGTSMuxerTests: XCTestCase {
 
-    // Minimal demuxer for assertions: PID → reassembled PES payloads, plus CC check.
+    // Minimal demuxer for assertions: PID -> reassembled PES payloads, plus CC check.
     struct Demuxed {
         var pes: [UInt16: [Data]] = [:]
         var pcrs: [UInt64] = []
@@ -188,7 +188,7 @@ final class BitstreamTests: XCTestCase {
 
     func testConstrainedFlags() {
         XCTAssertEqual(H264Bitstream.markConstrained(Data([0x67, 100, 0x00, 0x33])), Data([0x67, 100, 0x0C, 0x33]),
-                       "High → Constrained High (constraint_set4/5)")
+                       "High -> Constrained High (constraint_set4/5)")
         let main = Data([0x67, 77, 0x00, 0x28])
         XCTAssertEqual(H264Bitstream.markConstrained(main), main, "other profiles untouched")
         let pps = Data([0x68, 66, 0x00])
@@ -225,7 +225,7 @@ final class BitstreamTests: XCTestCase {
         // Consecutive frames are 1024 samples apart.
         let deltas = zip(frames.dropFirst(), frames).map { $0.1 - $1.1 }
         for d in deltas { XCTAssertEqual(d, 1024.0 / 48_000, accuracy: 1e-9) }
-        XCTAssertEqual(frames[0].1, 100 - 64.0 / 48_000, accuracy: 1e-9, "first emitted frame ≈ timeline start")
+        XCTAssertEqual(frames[0].1, 100 - 64.0 / 48_000, accuracy: 1e-9, "first emitted frame ~ timeline start")
     }
 }
 
@@ -235,14 +235,14 @@ final class LPCMTests: XCTestCase {
         let enc = LPCMEncoder()
         var out: [(Data, Double)] = []
         enc.onEncoded = { out.append(($0, $1)) }
-        // 25 ms of a ramp: 1200 frames → two full 480-frame PES, 240 frames held back.
+        // 25 ms of a ramp: 1200 frames -> two full 480-frame PES, 240 frames held back.
         let samples = (0..<1200).flatMap { i -> [Float] in [Float(i) / 2000, -0.5] }
         enc.encode(interleaved: samples, pts: 10)
         XCTAssertEqual(out.count, 2)
         let first = [UInt8](out[0].0)
         XCTAssertEqual(Array(first[0..<4]), [0xA0, 0x06, 0x00, 0x11])
         XCTAssertEqual(first.count, 4 + 480 * 4)
-        // Frame 1: L = 1/2000 * 32767 = 16 → 0x0010 big-endian; R = -0.5 → -16383 = 0xC001
+        // Frame 1: L = 1/2000 * 32767 = 16 -> 0x0010 big-endian; R = -0.5 -> -16383 = 0xC001
         XCTAssertEqual(Array(first[8..<12]), [0x00, 0x10, 0xC0, 0x01])
         XCTAssertEqual(out[0].1, 10, accuracy: 1e-9)
         XCTAssertEqual(out[1].1, 10.01, accuracy: 1e-9)

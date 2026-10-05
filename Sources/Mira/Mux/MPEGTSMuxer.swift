@@ -4,7 +4,7 @@ import Foundation
 //
 // WFD carries media as a single-program TS inside RTP (payload type 33). PIDs follow
 // the WFD spec: PMT 0x0100, video 0x1011, audio 0x1100. The PCR rides on the video
-// PID (as GStreamer's mpegtsmux does for WFD), so the video stream must never stall —
+// PID (as GStreamer's mpegtsmux does for WFD), so the video stream must never stall -
 // the frame pump re-sends the last frame when the screen is idle.
 final class MPEGTSMuxer {
 
@@ -35,7 +35,7 @@ final class MPEGTSMuxer {
 
     // MARK: - Public API
 
-    // One access unit (Annex B with AUD/SPS/PPS as needed) → TS packets.
+    // One access unit (Annex B with AUD/SPS/PPS as needed) -> TS packets.
     // pts90k: presentation time; pcr27M: current system clock (27 MHz units).
     func muxVideo(accessUnit: Data, pts90k: UInt64, pcr27M: UInt64, isKeyframe: Bool) -> [Data] {
         var out: [Data] = []
@@ -50,7 +50,7 @@ final class MPEGTSMuxer {
         return out
     }
 
-    // One audio access unit (ADTS frame, or LPCM block incl. its 4-byte header) →
+    // One audio access unit (ADTS frame, or LPCM block incl. its 4-byte header) ->
     // TS packets. If video has stalled long enough that the PCR would go stale, a
     // PCR-only packet on the PCR PID goes first.
     func muxAudio(_ frame: Data, pts90k: UInt64, pcr27M: UInt64) -> [Data] {
@@ -67,7 +67,7 @@ final class MPEGTSMuxer {
     }
 
     // Adaptation-field-only packet carrying a PCR. No payload, so the continuity
-    // counter repeats the last value rather than incrementing (13818-1 §2.4.3.3).
+    // counter repeats the last value rather than incrementing (13818-1 sec. 2.4.3.3).
     func pcrOnlyPacket(_ pcr27M: UInt64) -> Data {
         let pid = Self.videoPID
         var p = Data(capacity: Self.packetSize)
@@ -227,7 +227,7 @@ final class MPEGTSMuxer {
         case .aac:
             streams += [Self.streamTypeAAC, 0xE0 | UInt8(Self.audioPID >> 8), UInt8(Self.audioPID & 0xFF), 0xF0, 0x00]
         case .lpcm:
-            // LPCM audio stream descriptor (tag 0x83): 48 kHz, stereo — as Android's WFD source sends it.
+            // LPCM audio stream descriptor (tag 0x83): 48 kHz, stereo - as Android's WFD source sends it.
             streams += [Self.streamTypeLPCM, 0xE0 | UInt8(Self.audioPID >> 8), UInt8(Self.audioPID & 0xFF), 0xF0, 0x04,
                         0x83, 0x02, (2 << 5) | (3 << 1), (1 << 5) | 0x0F]
         case nil:

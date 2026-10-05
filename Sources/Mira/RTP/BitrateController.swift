@@ -1,9 +1,9 @@
 import Foundation
 
 // Adapts the video bitrate to the Wi-Fi link (AIMD, like TCP congestion control):
-//   • back off to 70 % on packet loss reported by the sink (RTCP receiver reports),
+//   - back off to 70 % on packet loss reported by the sink (RTCP receiver reports),
 //     on local send congestion, or when the sink asks for IDR frames (decoder lost data)
-//   • creep back up by 8 % after 4 s without trouble, never above the configured maximum
+//   - creep back up by 8 % after 4 s without trouble, never above the configured maximum
 // The sink isn't required to send RTCP, so the local signals matter most in practice.
 final class BitrateController {
 
@@ -31,7 +31,7 @@ final class BitrateController {
     }
 
     enum Signal: CustomStringConvertible {
-        case loss(fraction: Double)      // RTCP fraction lost, 0…1
+        case loss(fraction: Double)      // RTCP fraction lost, 0...1
         case sendCongestion(backlog: Int)
         case idrRequest
 
@@ -49,7 +49,7 @@ final class BitrateController {
     func report(_ signal: Signal, now: Date = Date()) {
         switch signal {
         case .loss(let f) where f < 0.02:
-            return                          // ≤2 % is normal Wi-Fi noise
+            return                          // <=2 % is normal Wi-Fi noise
         case .idrRequest:
             // Sinks often ask for one keyframe at startup; only repeated requests mean loss.
             idrRequests = idrRequests.filter { now.timeIntervalSince($0) < 10 } + [now]
@@ -61,7 +61,7 @@ final class BitrateController {
         guard now.timeIntervalSince(lastDecrease) >= decreaseCooldown else { return }
         let factor: Double
         if case .loss(let f) = signal, f > 0.15 { factor = 0.5 } else { factor = decreaseFactor }
-        set(Int(Double(current) * factor), reason: "↓ \(signal)", now: now)
+        set(Int(Double(current) * factor), reason: "down: \(signal)", now: now)
         lastDecrease = now
     }
 
@@ -70,7 +70,7 @@ final class BitrateController {
         guard current < config.maximum,
               now.timeIntervalSince(lastTrouble) >= calmPeriod,
               now.timeIntervalSince(lastIncrease) >= 1 else { return }
-        set(Int(Double(current) * increaseFactor), reason: "↑ link is clean", now: now)
+        set(Int(Double(current) * increaseFactor), reason: "up: link is clean", now: now)
         lastIncrease = now
     }
 
@@ -83,7 +83,7 @@ final class BitrateController {
     }
 }
 
-// RTCP receiver/sender report blocks (RFC 3550 §6.4).
+// RTCP receiver/sender report blocks (RFC 3550 sec. 6.4).
 struct RTCPReportBlock: Equatable {
     var ssrc: UInt32
     var fractionLost: Double

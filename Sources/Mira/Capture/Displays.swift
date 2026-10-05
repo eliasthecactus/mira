@@ -9,7 +9,7 @@ struct DisplayInfo: Equatable {
     let height: Int
     let isMain: Bool
 
-    var label: String { "\(name) (\(width)×\(height))\(isMain ? " — main" : "")" }
+    var label: String { "\(name) (\(width)x\(height))\(isMain ? " - main" : "")" }
 
     static func all() -> [DisplayInfo] {
         var count: UInt32 = 0

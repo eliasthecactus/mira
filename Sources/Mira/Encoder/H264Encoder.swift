@@ -4,8 +4,8 @@ import CoreMedia
 import CoreVideo
 
 // Wraps VTCompressionSession for real-time H.264 (Constrained Baseline or Constrained
-// High — never B-frames).
-// Output is AVCC CMSampleBuffers → H264Bitstream.accessUnit for Annex B.
+// High - never B-frames).
+// Output is AVCC CMSampleBuffers -> H264Bitstream.accessUnit for Annex B.
 final class H264Encoder {
 
     struct Config {
@@ -13,7 +13,7 @@ final class H264Encoder {
         var height: Int32 = 1080
         var fps: Int32    = 30
         var bitrate: Int  = 6_000_000
-        var levelBit: UInt8 = 0x04          // WFD level bit (0x01=3.1 … 0x80=5.2)
+        var levelBit: UInt8 = 0x04          // WFD level bit (0x01=3.1 ... 0x80=5.2)
         var highProfile = false             // Constrained High (used for 4K when CBP isn't offered)
         var lowLatency = false              // VideoToolbox low-latency rate control
         var keyframeIntervalSeconds: Int32 = 2
@@ -104,7 +104,7 @@ final class H264Encoder {
             (kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, config.keyframeIntervalSeconds),
             (kVTCompressionPropertyKey_ExpectedFrameRate,     config.fps),
             (kVTCompressionPropertyKey_AverageBitRate,        config.bitrate),
-            // Cap bursts at 1.5× the average over any 1 s window to spare the Wi-Fi link.
+            // Cap bursts at 1.5x the average over any 1 s window to spare the Wi-Fi link.
             (kVTCompressionPropertyKey_DataRateLimits,        [config.bitrate * 3 / 16, 1] as CFArray),
         ]
         // CABAC is High-profile only; Baseline must use CAVLC.
@@ -118,7 +118,7 @@ final class H264Encoder {
         }
 
         VTCompressionSessionPrepareToEncodeFrames(session)
-        Log.info("Encoder", "H.264 \(config.highProfile ? "Constrained High" : "Constrained Baseline") \(config.width)×\(config.height) @\(config.fps)fps \(config.bitrate / 1000) kbps, level bit 0x\(String(config.levelBit, radix: 16))\(lowLatency ? ", low-latency" : "")")
+        Log.info("Encoder", "H.264 \(config.highProfile ? "Constrained High" : "Constrained Baseline") \(config.width)x\(config.height) @\(config.fps)fps \(config.bitrate / 1000) kbps, level bit 0x\(String(config.levelBit, radix: 16))\(lowLatency ? ", low-latency" : "")")
     }
 
     // The first frame through a fresh session can take hundreds of ms (much more with

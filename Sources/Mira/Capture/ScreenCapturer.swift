@@ -104,7 +104,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         }
         try await s.startCapture()
         stream = s
-        Log.info("Capture", "Display \(display.displayID) (\(display.width)×\(display.height)) → \(config.width)×\(config.height) @\(config.fps)fps, audio \(config.captureAudio ? "on" : "off"), sharing \(target)")
+        Log.info("Capture", "Display \(display.displayID) (\(display.width)x\(display.height)) -> \(config.width)x\(config.height) @\(config.fps)fps, audio \(config.captureAudio ? "on" : "off"), sharing \(target)")
     }
 
     // Switches what's shared without restarting the stream (the TV doesn't notice).
@@ -137,7 +137,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
             return SCContentFilter(display: best, including: [app], exceptingWindows: [])
         case .window(let id, let title):
             guard let window = content.windows.first(where: { $0.windowID == id }) else {
-                throw CaptureError.targetGone("the window “\(title)” is closed")
+                throw CaptureError.targetGone("the window '\(title)' is closed")
             }
             return SCContentFilter(desktopIndependentWindow: window)
         }
@@ -159,7 +159,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         var errorDescription: String? {
             switch self {
             case .permissionDenied(let e):
-                return "Screen Recording permission missing (\(e.localizedDescription)). Grant it in System Settings → Privacy & Security → Screen & System Audio Recording to the app running Mira (e.g. Terminal), then restart it."
+                return "Screen Recording permission missing (\(e.localizedDescription)). Grant it in System Settings -> Privacy & Security -> Screen & System Audio Recording to the app running Mira (e.g. Terminal), then restart it."
             case .noDisplayFound:
                 return "No display found to capture"
             case .targetGone(let why):

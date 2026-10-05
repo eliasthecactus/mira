@@ -88,7 +88,7 @@ struct MICEMessage: Equatable {
         ])
     }
 
-    // [MS-MICE] 3.1.5.6.1: SHA-256(ASCII PIN ‖ binary IP address of the sender).
+    // [MS-MICE] 3.1.5.6.1: SHA-256(ASCII PIN || binary IP address of the sender).
     static func pinHash(pin: String, senderIP: String) -> Data? {
         var addr4 = in_addr(), addr6 = in6_addr()
         var ipBytes: Data
@@ -184,7 +184,7 @@ struct MICEMessage: Equatable {
 
     // MARK: - Wire format
 
-    // The TLVArray on its own — what gets encrypted once a PIN session is set up.
+    // The TLVArray on its own - what gets encrypted once a PIN session is set up.
     var tlvBytes: Data {
         var body = Data()
         for tlv in tlvs {

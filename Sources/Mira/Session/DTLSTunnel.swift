@@ -8,13 +8,13 @@ import Network
 // Network.framework's DTLS 1.2 client against a loopback relay we own: every
 // datagram the client emits lands in the relay, and we decide where it goes.
 //
-//   handshake records  → SECURITY_HANDSHAKE token to the sink (and the sink's tokens
+//   handshake records  -> SECURITY_HANDSHAKE token to the sink (and the sink's tokens
 //                        are injected back into the client)
-//   application data   → either the encrypted form of a TLVArray (PIN messages) or an
+//   application data   -> either the encrypted form of a TLVArray (PIN messages) or an
 //                        encrypted RTP packet sent on to the sink's RTP port
 //
-// The spec says TLVArrays and RTP "MUST be encrypted … using the DTLS Encryption Key"
-// without naming a record format. We use DTLS application-data records — what a
+// The spec says TLVArrays and RTP "MUST be encrypted ... using the DTLS Encryption Key"
+// without naming a record format. We use DTLS application-data records - what a
 // DTLS stack (e.g. Windows SChannel) produces when asked to encrypt a message. This
 // is an interpretation; the security log lines exist to confirm it on real hardware.
 final class DTLSTunnel: @unchecked Sendable {   // all state confined to `queue`
@@ -94,10 +94,10 @@ final class DTLSTunnel: @unchecked Sendable {   // all state confined to `queue`
 
     // MARK: - Handshake
 
-    // A Security Token TLV from the sink → into the DTLS client.
+    // A Security Token TLV from the sink -> into the DTLS client.
     func receiveHandshakeToken(_ token: Data) {
         queue.async { [self] in
-            Log.debug("DTLS", "← \(token.count) bytes \(Self.describe(token))")
+            Log.debug("DTLS", "<- \(token.count) bytes \(Self.describe(token))")
             toClient(token)
         }
     }
@@ -154,7 +154,7 @@ final class DTLSTunnel: @unchecked Sendable {   // all state confined to `queue`
             }
             mediaDestination = Self.address(host, port)
             mediaFD = fd
-            Log.info("DTLS", "Encrypted RTP → \(host):\(port) from UDP \(localPort)")
+            Log.info("DTLS", "Encrypted RTP -> \(host):\(port) from UDP \(localPort)")
         }
     }
 
@@ -236,7 +236,7 @@ final class DTLSTunnel: @unchecked Sendable {   // all state confined to `queue`
         } else if contentType == 21 && isReady {
             Log.warn("DTLS", "Alert from local DTLS client: \(datagram.hexString)")
         } else {
-            Log.debug("DTLS", "→ \(datagram.count) bytes \(Self.describe(datagram))")
+            Log.debug("DTLS", "-> \(datagram.count) bytes \(Self.describe(datagram))")
             onHandshakeToken?(datagram)
         }
     }
@@ -323,7 +323,7 @@ final class DTLSTunnel: @unchecked Sendable {   // all state confined to `queue`
         return a
     }
 
-    // "handshake: ClientHello" etc. — enough to read the exchange in the log.
+    // "handshake: ClientHello" etc. - enough to read the exchange in the log.
     static func describe(_ datagram: Data) -> String {
         let b = [UInt8](datagram)
         var parts: [String] = []

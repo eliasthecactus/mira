@@ -1,7 +1,7 @@
 import Foundation
 import AudioToolbox
 
-// PCM (interleaved Float32, 48 kHz stereo) → AAC-LC frames wrapped in ADTS, which is
+// PCM (interleaved Float32, 48 kHz stereo) -> AAC-LC frames wrapped in ADTS, which is
 // how AAC is carried in MPEG-TS (stream_type 0x0F). WFD's AAC mode bit 0 is exactly
 // this format, and it's the only AAC mode sinks must support.
 final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.audioQueue
@@ -15,7 +15,7 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
     var onEncoded: ((_ adts: Data, _ pts: Double) -> Void)?
 
     private var converter: AudioConverterRef?
-    private var fifo: [Float] = []             // interleaved L R L R …
+    private var fifo: [Float] = []             // interleaved L R L R ...
     private var timelineStart: Double?         // host time of the first frame fed
     private var framesQueued = 0               // frames ever appended to the fifo
     private var packetsOut = 0
@@ -65,7 +65,7 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
             let expected = start + Double(framesQueued) / Self.sampleRate
             let drift = pts - expected
             if drift > 1.0 || drift < -1.0 {
-                Log.info("Audio", String(format: "Audio timeline jump %.2fs — resetting encoder", drift))
+                Log.info("Audio", String(format: "Audio timeline jump %.2fs - resetting encoder", drift))
                 reset(at: pts)
             } else if drift > 0.04 {
                 // Capture gap (SCStream stops delivering during silence): pad with silence.
@@ -156,7 +156,7 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
     // 7-byte ADTS header, no CRC: AAC-LC, 48 kHz (index 3), 2 channels.
     static func adtsHeader(payloadLength: Int) -> [UInt8] {
         let frameLength = payloadLength + 7
-        let profile = 1          // AAC LC (object type 2) − 1
+        let profile = 1          // AAC LC (object type 2) - 1
         let freqIndex = 3        // 48000 Hz
         let channelConfig = 2
         return [

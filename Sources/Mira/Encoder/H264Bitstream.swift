@@ -2,9 +2,9 @@ import Foundation
 import CoreMedia
 
 // Turns VideoToolbox AVCC output into an Annex B access unit for MPEG-TS:
-//   [AUD] [SPS PPS — keyframes only] [slice NALs...], each prefixed by 00 00 00 01.
+//   [AUD] [SPS PPS - keyframes only] [slice NALs...], each prefixed by 00 00 00 01.
 // The access unit delimiter is required by the H.264-in-TS spec (ITU-T H.222.0
-// §2.14) and hardware decoders in sinks tend to rely on it.
+// sec. 2.14) and hardware decoders in sinks tend to rely on it.
 enum H264Bitstream {
 
     static let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
@@ -36,8 +36,8 @@ enum H264Bitstream {
     // WFD signals Constrained Baseline / Constrained High. VideoToolbox's output already
     // meets those constraints (no FMO/ASO/redundant slices; progressive; no B-frames
     // because frame reordering is off) but its SPS doesn't always say so:
-    //   Baseline (66): set constraint_set0/1   → Constrained Baseline
-    //   High (100):    set constraint_set4/5   → Constrained High
+    //   Baseline (66): set constraint_set0/1   -> Constrained Baseline
+    //   High (100):    set constraint_set4/5   -> Constrained High
     static func markConstrained(_ nal: Data) -> Data {
         var b = [UInt8](nal)
         guard b.count >= 4, b[0] & 0x1F == 7 else { return nal }
@@ -49,7 +49,7 @@ enum H264Bitstream {
         return Data(b)
     }
 
-    // AVCC: [4-byte big-endian length][NAL] …
+    // AVCC: [4-byte big-endian length][NAL] ...
     static func extractNALUs(from sampleBuffer: CMSampleBuffer) -> [Data] {
         guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { return [] }
         var totalLength = 0

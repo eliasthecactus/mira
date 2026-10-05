@@ -89,7 +89,7 @@ final class DeviceListViewController: NSViewController {
         controlRow.spacing = 8
         controlRow.isHidden = true
 
-        // Manual IP entry — for networks where mDNS discovery is filtered.
+        // Manual IP entry - for networks where mDNS discovery is filtered.
         ipField.placeholderString = "Adapter IP address (if not listed)"
         ipField.stringValue = Settings.lastManualIP
         ipField.font = .systemFont(ofSize: 11)
@@ -114,7 +114,7 @@ final class DeviceListViewController: NSViewController {
         targetPopup.font = .systemFont(ofSize: 11)
         targetPopup.target = self
         targetPopup.action = #selector(targetChosen)
-        targetPopup.toolTip = "Share the whole screen, one app (other windows stay black) or one window — switches live"
+        targetPopup.toolTip = "Share the whole screen, one app (other windows stay black) or one window - switches live"
         targetPopup.addItem(withTitle: "Share: Entire screen")
         resolutionPopup.addItems(withTitles: ["Best", "4K", "1080p", "720p"])
         resolutionPopup.selectItem(at: Self.resolutions.firstIndex(of: Settings.resolution) ?? 0)
@@ -130,7 +130,7 @@ final class DeviceListViewController: NSViewController {
         securityPopup.toolTip = "Auto connects normally and asks for a PIN only if the display insists"
         lowLatencyCheckbox.state = Settings.lowLatency ? .on : .off
         lowLatencyCheckbox.action = #selector(settingsChanged)
-        lowLatencyCheckbox.toolTip = "Halves the delay (about 100 ms instead of 200 ms) — prefers LPCM audio and a smaller buffer; may stutter on weak Wi-Fi"
+        lowLatencyCheckbox.toolTip = "Halves the delay (about 100 ms instead of 200 ms) - prefers LPCM audio and a smaller buffer; may stutter on weak Wi-Fi"
         fpsCheckbox.state = Settings.fps == 60 ? .on : .off
         fpsCheckbox.action = #selector(settingsChanged)
         fpsCheckbox.toolTip = "Smoother motion if the display supports 60 fps (uses more bandwidth)"
@@ -143,7 +143,7 @@ final class DeviceListViewController: NSViewController {
         audioCheckbox.action = #selector(settingsChanged)
         testPatternCheckbox.state = Settings.testPattern ? .on : .off
         testPatternCheckbox.action = #selector(settingsChanged)
-        testPatternCheckbox.toolTip = "Send colour bars and a beep instead of the screen — for testing a new display"
+        testPatternCheckbox.toolTip = "Send colour bars and a beep instead of the screen - for testing a new display"
         muteCheckbox.state = Settings.muteMac ? .on : .off
         muteCheckbox.action = #selector(settingsChanged)
         muteCheckbox.toolTip = "Mute the Mac's speakers while mirroring so you don't hear everything twice"
@@ -154,7 +154,7 @@ final class DeviceListViewController: NSViewController {
         loginCheckbox.isHidden = !AppInfo.isAppBundle
         refreshLoginCheckbox()
 
-        let settingsTitle = NSTextField(labelWithString: "Settings — apply to the next connection")
+        let settingsTitle = NSTextField(labelWithString: "Settings - apply to the next connection")
         settingsTitle.font = .systemFont(ofSize: 10)
         settingsTitle.textColor = .tertiaryLabelColor
         let row2 = NSStackView(views: [modePopup, resolutionPopup, bitratePopup])
@@ -177,7 +177,7 @@ final class DeviceListViewController: NSViewController {
         diagButton.toolTip = "Save a zip with the log and system/network info for a bug report"
         let helpButton = Self.linkButton("Help", self, #selector(openHelp))
         let quitButton = Self.linkButton("Quit", self, #selector(quit))
-        let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.toggleMirroring.display) start/stop · \(GlobalHotKey.togglePrivacy.display) pause")
+        let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.toggleMirroring.display) start/stop - \(GlobalHotKey.togglePrivacy.display) pause")
         shortcut.font = .systemFont(ofSize: 10)
         shortcut.textColor = .tertiaryLabelColor
         let footer = NSStackView(views: [logButton, diagButton, helpButton, NSView(), quitButton])
@@ -246,8 +246,8 @@ final class DeviceListViewController: NSViewController {
             menu.addItem(.separator())
             add("Only one window", nil)
             for w in items.windows.prefix(30) {
-                let title = w.title.count > 40 ? String(w.title.prefix(40)) + "…" : w.title
-                add("\(w.appName) — \(title)", .window(id: w.id, title: w.title), indent: true)
+                let title = w.title.count > 40 ? String(w.title.prefix(40)) + "..." : w.title
+                add("\(w.appName) - \(title)", .window(id: w.id, title: w.title), indent: true)
             }
             targetPopup.menu = menu
             if targetPopup.selectedItem?.representedObject == nil { targetPopup.selectItem(at: 0) }
@@ -305,14 +305,14 @@ final class DeviceListViewController: NSViewController {
         var extras: [String] = []
         if stats.extended { extras.append("second screen") }
         if stats.extendFailure != nil { extras.append("(second screen not available on this Mac)") }
-        if stats.encrypted { extras.append("🔒") }
-        statusLabel.stringValue = "\(stats.extended ? "Extending" : "Mirroring") to \(d.name) · \(stats.resolution) · \(Int(stats.fps.rounded())) fps · \(String(format: "%.1f", Double(stats.kbps) / 1000)) of \(String(format: "%.1f", Double(stats.targetKbps) / 1000)) Mbit/s" + (extras.isEmpty ? "" : " · " + extras.joined(separator: " "))
+        if stats.encrypted { extras.append("encrypted") }
+        statusLabel.stringValue = "\(stats.extended ? "Extending" : "Mirroring") to \(d.name) - \(stats.resolution) - \(Int(stats.fps.rounded())) fps - \(String(format: "%.1f", Double(stats.kbps) / 1000)) of \(String(format: "%.1f", Double(stats.targetKbps) / 1000)) Mbit/s" + (extras.isEmpty ? "" : " - " + extras.joined(separator: " "))
     }
 
     func setUpdate(_ release: UpdateChecker.Release?) {
         update = release
         updateButton.isHidden = release == nil
-        if let release { updateButton.title = "⬆︎ Mira \(release.version) is available" }
+        if let release { updateButton.title = "Update available: Mira \(release.version)" }
         resizeToFit()
     }
 
@@ -322,17 +322,17 @@ final class DeviceListViewController: NSViewController {
             if !devices.isEmpty {
                 statusLabel.stringValue = "\(devices.count) display\(devices.count == 1 ? "" : "s") found"
             } else if Date().timeIntervalSince(startedAt) < 15 {
-                statusLabel.stringValue = "Looking for Miracast displays… A Microsoft 4K Wireless Display Adapter shows up here once it's on your Wi-Fi."
+                statusLabel.stringValue = "Looking for Miracast displays... A Microsoft 4K Wireless Display Adapter shows up here once it's on your Wi-Fi."
             } else {
-                // macOS gives no error when Local Network access is denied — discovery is just empty.
-                statusLabel.stringValue = "No displays found yet. Check that Mira is allowed under System Settings → Privacy & Security → Local Network, and that the adapter is on this Wi-Fi. You can also enter its IP address below."
+                // macOS gives no error when Local Network access is denied - discovery is just empty.
+                statusLabel.stringValue = "No displays found yet. Check that Mira is allowed under System Settings -> Privacy & Security -> Local Network, and that the adapter is on this Wi-Fi. You can also enter its IP address below."
             }
         case .connecting(let d):
-            statusLabel.stringValue = "Connecting to \(d.name)…"
+            statusLabel.stringValue = "Connecting to \(d.name)..."
         case .streaming(let d, let res):
-            statusLabel.stringValue = "Mirroring to \(d.name) · \(res)"
+            statusLabel.stringValue = "Mirroring to \(d.name) - \(res)"
         case .failed(let why):
-            statusLabel.stringValue = "⚠️ \(why)"
+            statusLabel.stringValue = "Warning: \(why)"
         }
     }
 
@@ -369,7 +369,7 @@ final class DeviceListViewController: NSViewController {
     @objc private func ipConnectTapped() {
         let ip = ipField.stringValue.trimmingCharacters(in: .whitespaces)
         guard CLI.isIPAddress(ip) else {
-            statusLabel.stringValue = "⚠️ “\(ip)” is not an IP address"
+            statusLabel.stringValue = "Warning: '\(ip)' is not an IP address"
             return
         }
         Settings.lastManualIP = ip
@@ -396,7 +396,7 @@ final class DeviceListViewController: NSViewController {
             if loginCheckbox.state == .on { try SMAppService.mainApp.register() }
             else { try SMAppService.mainApp.unregister() }
         } catch {
-            statusLabel.stringValue = "⚠️ Could not change login item: \(error.localizedDescription). Move Mira to /Applications first."
+            statusLabel.stringValue = "Warning: Could not change login item: \(error.localizedDescription). Move Mira to /Applications first."
         }
         refreshLoginCheckbox()
     }
@@ -430,7 +430,7 @@ final class DeviceListViewController: NSViewController {
                 Updater.relaunch(app)
                 NSApp.terminate(nil)
             } catch {
-                statusLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                statusLabel.stringValue = "Warning: \(error.localizedDescription)"
                 updateButton.isEnabled = true
             }
             resizeToFit()
@@ -440,14 +440,14 @@ final class DeviceListViewController: NSViewController {
     @objc private func openLog() { NSWorkspace.shared.open(Log.logFileURL) }
 
     @objc private func exportDiagnostics() {
-        statusLabel.stringValue = "Collecting diagnostics (takes a few seconds)…"
+        statusLabel.stringValue = "Collecting diagnostics (takes a few seconds)..."
         Task { @MainActor in
             do {
                 let url = try await Diagnostics.export()
                 statusLabel.stringValue = "Saved \(url.lastPathComponent) to your Desktop"
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } catch {
-                statusLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                statusLabel.stringValue = "Warning: \(error.localizedDescription)"
             }
             resizeToFit()
         }

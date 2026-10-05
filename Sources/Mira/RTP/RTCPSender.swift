@@ -58,7 +58,7 @@ final class RTCPSender: @unchecked Sendable {   // all state confined to `queue`
             }
             t.resume()
             timer = t
-            Log.info("RTCP", "Listening on UDP \(localPort)\(rtcpPort.map { ", sender reports → \(sinkHost):\($0)" } ?? "")")
+            Log.info("RTCP", "Listening on UDP \(localPort)\(rtcpPort.map { ", sender reports -> \(sinkHost):\($0)" } ?? "")")
         }
     }
 

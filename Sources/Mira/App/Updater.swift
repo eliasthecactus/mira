@@ -97,13 +97,13 @@ enum Updater {
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work) }
 
-        progress("Downloading Mira \(release.version)…")
+        progress("Downloading Mira \(release.version)...")
         let zip = work.appendingPathComponent("Mira.zip")
         let (tmp, _) = try await URLSession.shared.download(from: release.zip)
         try FileManager.default.moveItem(at: tmp, to: zip)
         let (sumsData, _) = try await URLSession.shared.data(from: release.checksums)
 
-        progress("Verifying…")
+        progress("Verifying...")
         let expected = String(decoding: sumsData, as: UTF8.self).components(separatedBy: "\n")
             .first { $0.hasSuffix("Mira-\(release.version).zip") }?
             .split(separator: " ").first.map(String.init)
@@ -114,7 +114,7 @@ enum Updater {
         let newApp = work.appendingPathComponent("Mira.app")
         try verify(newApp, expectedVersion: release.version, replacing: app)
 
-        progress("Installing…")
+        progress("Installing...")
         _ = Diagnostics.shell("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp.path])
         // Move the old version to the Trash (recoverable), then put the new one in its place.
         var trashed: NSURL?

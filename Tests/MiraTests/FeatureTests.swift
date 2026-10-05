@@ -37,7 +37,7 @@ final class FourKNegotiationTests: XCTestCase {
     func test4KNeedsSufficientLevel() {
         var prefs = StreamPreferences()
         prefs.resolution = .p2160
-        // Advertises 4K30 but only level 4.2 → not usable.
+        // Advertises 4K30 but only level 4.2 -> not usable.
         let lowLevel = WFDSinkCapabilities.parse("wfd_video_formats: 00 00 02 10 000fffff 00000000 00000000 00 0000 0000 00 none none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 1 0 mode=play\r\n")
         XCTAssertEqual(WFDNegotiatedFormat.choose(sink: lowLevel, prefs: prefs).resolution.description, "1920x1080p30")
     }
@@ -110,7 +110,7 @@ final class SharingAndPrivacyTests: XCTestCase {
         XCTAssertEqual(items.window(matching: "42")?.title, "Quarterly Review.key")
         XCTAssertEqual(items.window(matching: "quarterly")?.id, 42)
         XCTAssertNil(items.window(matching: "nope"))
-        XCTAssertEqual(CaptureTarget.app(bundleID: "x", name: "Keynote").description, "app “Keynote”")
+        XCTAssertEqual(CaptureTarget.app(bundleID: "x", name: "Keynote").description, "app 'Keynote'")
     }
 
     func testBlackFrameIsOpaqueBlack() throws {

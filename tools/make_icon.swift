@@ -9,7 +9,7 @@ func render(size: Int) -> Data {
                         space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.scaleBy(x: s / 1024, y: s / 1024)
 
-    // macOS icon grid: 824×824 rounded square centred in 1024, radius ~185.
+    // macOS icon grid: 824x824 rounded square centred in 1024, radius ~185.
     let body = CGRect(x: 100, y: 100, width: 824, height: 824)
     let path = CGPath(roundedRect: body, cornerWidth: 185, cornerHeight: 185, transform: nil)
 

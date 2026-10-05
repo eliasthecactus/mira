@@ -2,7 +2,7 @@ import Foundation
 import CoreMedia
 import CoreVideo
 
-// Capture → H.264/AAC → MPEG-TS → RTP → UDP, for one negotiated WFD session.
+// Capture -> H.264/AAC -> MPEG-TS -> RTP -> UDP, for one negotiated WFD session.
 //
 // Timing: everything uses the host clock. PCR = time since start; PTS = capture
 // time + `ptsDelay`, which gives the sink a fixed buffer to absorb encode time and
@@ -266,7 +266,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         return pb
     }
 
-    // The sink asked for an IDR: its decoder lost data — also a sign the link is struggling.
+    // The sink asked for an IDR: its decoder lost data - also a sign the link is struggling.
     func sinkRequestedKeyframe() {
         encoder.forceKeyframe()
         controlQueue.async { self.bitrate.report(.idrRequest) }

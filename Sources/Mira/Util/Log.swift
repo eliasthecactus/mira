@@ -42,7 +42,17 @@ enum Log {
     static func warn(_ tag: String, _ msg: @autoclosure () -> String) { write(.warn, tag, msg()) }
     static func error(_ tag: String, _ msg: @autoclosure () -> String) { write(.error, tag, msg()) }
 
-    private static func write(_ level: Level, _ tag: String, _ msg: String) {
+    // Logs are ASCII-only: names from the system or the network (a Mac called
+    // "Elias's MacBook", a TV called "Wohnzimmer") are transliterated, and anything
+    // without an ASCII equivalent becomes "?".
+    static func ascii(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: { !$0.isASCII }) else { return text }
+        let latin = text.applyingTransform(StringTransform("Any-Latin; Latin-ASCII"), reverse: false) ?? text
+        return String(String.UnicodeScalarView(latin.unicodeScalars.map { $0.isASCII ? $0 : "?" }))
+    }
+
+    private static func write(_ level: Level, _ tag: String, _ message: String) {
+        let msg = ascii(message)
         let now = Date()
         queue.async {
             let prefix = level == .warn ? "WARN " : level == .error ? "ERROR " : ""

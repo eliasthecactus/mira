@@ -86,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.connect(to: device)
     }
 
-    // ⌃⌥⌘M: stop if mirroring, otherwise reconnect to the last display.
+    // Ctrl+Opt+Cmd+M: stop if mirroring, otherwise reconnect to the last display.
     private func toggleMirroring() {
         switch controller.status {
         case .streaming, .connecting:
@@ -125,9 +125,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Mira needs Screen Recording permission"
         alert.informativeText = """
-        To mirror your screen, allow Mira in System Settings → Privacy & Security → Screen & System Audio Recording, then quit and reopen Mira.
+        To mirror your screen, allow Mira in System Settings -> Privacy & Security -> Screen & System Audio Recording, then quit and reopen Mira.
 
-        You can try a display without it: turn on “Test pattern” in Mira's settings.
+        You can try a display without it: turn on 'Test pattern' in Mira's settings.
         """
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")

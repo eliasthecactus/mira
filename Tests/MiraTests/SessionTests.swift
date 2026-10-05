@@ -18,14 +18,14 @@ final class MICEMessageTests: XCTestCase {
     }
 
     func testRoundTripAndPartialReads() throws {
-        let msg = MICEMessage.sourceReady(friendlyName: "Wohnzimmer – Mac 💻", rtspPort: 7300, sourceID: Data([1, 2, 3]))
+        let msg = MICEMessage.sourceReady(friendlyName: "Wohnzimmer \u{2013} Mac \u{1F4BB}", rtspPort: 7300, sourceID: Data([1, 2, 3]))
         let wire = msg.serialize() + MICEMessage.stopProjection(friendlyName: "x", sourceID: Data()).serialize()
 
         var buffer = Data(wire.prefix(5))
         XCTAssertNil(try MICEMessage.extract(from: &buffer))
         buffer = wire
         let first = try XCTUnwrap(try MICEMessage.extract(from: &buffer))
-        XCTAssertEqual(first.friendlyName, "Wohnzimmer – Mac 💻")
+        XCTAssertEqual(first.friendlyName, "Wohnzimmer \u{2013} Mac \u{1F4BB}")
         XCTAssertEqual(first.rtspPort, 7300)
         XCTAssertEqual(first.value(.sourceID)?.count, 16)
         let second = try XCTUnwrap(try MICEMessage.extract(from: &buffer))
@@ -34,7 +34,7 @@ final class MICEMessageTests: XCTestCase {
     }
 
     func testFriendlyNameTruncatedTo520Bytes() {
-        let encoded = MICEMessage.encodeFriendlyName(String(repeating: "é", count: 400))
+        let encoded = MICEMessage.encodeFriendlyName(String(repeating: "\u{E9}", count: 400))
         XCTAssertLessThanOrEqual(encoded.count, MICEMessage.maxFriendlyNameBytes)
         XCTAssertEqual(encoded.count % 2, 0)
     }
@@ -126,7 +126,7 @@ final class WFDNegotiationTests: XCTestCase {
     }
 
     func testFallsBackTo720pWhenLevelTooLow() {
-        // Level 3.2 (0x02) only, 720p30 + 1080p30 bits set → 1080p30 needs level 4.
+        // Level 3.2 (0x02) only, 720p30 + 1080p30 bits set -> 1080p30 needs level 4.
         let caps = WFDSinkCapabilities.parse("wfd_video_formats: 00 00 01 02 000000a1 00000000 00000000 00 0000 0000 00 none none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 19000 0 mode=play\r\n")
         let n = WFDNegotiatedFormat.choose(sink: caps, prefs: StreamPreferences())
         XCTAssertEqual(n.resolution.description, "1280x720p30")
@@ -167,7 +167,7 @@ final class AudioNegotiationTests: XCTestCase {
         let prefs = StreamPreferences()
         XCTAssertEqual(WFDNegotiatedFormat.choose(sink: caps("LPCM 00000003 00, AAC 00000001 00"), prefs: prefs).audio?.format, "AAC")
         XCTAssertEqual(WFDNegotiatedFormat.choose(sink: caps("LPCM 00000003 00"), prefs: prefs).audio?.descriptor, "LPCM 00000002 00")
-        XCTAssertNil(WFDNegotiatedFormat.choose(sink: caps("LPCM 00000001 00"), prefs: prefs).audio, "44.1 kHz only → no audio")
+        XCTAssertNil(WFDNegotiatedFormat.choose(sink: caps("LPCM 00000001 00"), prefs: prefs).audio, "44.1 kHz only -> no audio")
     }
 
     func testForcedCodec() {
@@ -198,5 +198,14 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertFalse(UpdateChecker.isNewer("0.2.0", than: "0.2.0"))
         XCTAssertFalse(UpdateChecker.isNewer("1.0", than: "1.0.0"))
         XCTAssertTrue(UpdateChecker.isNewer("0.2.0", than: "dev"), "source builds (version \"dev\") see any release as newer")
+    }
+}
+
+final class LogTests: XCTestCase {
+    func testLogOutputIsASCII() {
+        XCTAssertEqual(Log.ascii("Elias\u{2019}s MacBook"), "Elias's MacBook")
+        XCTAssertEqual(Log.ascii("Wohnzimmer Fernseh-Gr\u{FC}n"), "Wohnzimmer Fernseh-Grun")
+        XCTAssertEqual(Log.ascii("plain"), "plain")
+        XCTAssertTrue(Log.ascii("TV \u{1F4FA}").unicodeScalars.allSatisfy(\.isASCII))
     }
 }

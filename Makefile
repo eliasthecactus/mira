@@ -35,7 +35,7 @@ app:
 	ARCHS="$(shell uname -m)" scripts/package.sh
 
 # Universal DMG + zip + checksums + Homebrew cask in dist/ (what the release workflow runs)
-# SIGN_ID="Developer ID Application: …" NOTARY_PROFILE=… make dist   for a notarized build
+# SIGN_ID="Developer ID Application: ..." NOTARY_PROFILE=... make dist   for a notarized build
 dist:
 	scripts/package.sh
 

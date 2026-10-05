@@ -37,7 +37,7 @@ final class TestPatternSource: VideoSource, AudioSource {
         ]
         CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
         startTone()
-        Log.info("Capture", "Test pattern \(width)×\(height) with 1 kHz beep each second")
+        Log.info("Capture", "Test pattern \(width)x\(height) with 1 kHz beep each second")
     }
 
     func stop() {

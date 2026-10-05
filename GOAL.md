@@ -16,82 +16,82 @@ Microsoft's **Miracast over Infrastructure** ([MS-MICE]) runs the whole Miracast
 
 ```
 Mac (source)                                   Adapter (sink)
-  │  mDNS: <name>._display._tcp → port 7250, TXT container_id
-  │
-  │  listen TCP 7236 (RTSP server)
-  │── TCP connect :7250 ─────────────────────────▶│
-  │── MICE SOURCE_READY {name, rtsp_port, id} ──▶│
-  │◀──────────────── TCP connect :7236 ───────────│   sink connects *to us*
-  │── M1 OPTIONS * (Require: org.wfa.wfd1.0) ───▶│
-  │◀──────────────────────── M2 OPTIONS * ───────│
-  │── M3 GET_PARAMETER (sink capabilities) ─────▶│
-  │── M4 SET_PARAMETER (chosen format, URL) ────▶│
-  │── M5 SET_PARAMETER wfd_trigger_method: SETUP▶│
-  │◀──────────────── M6 SETUP (client_port) ─────│
-  │◀──────────────── M7 PLAY ────────────────────│
-  │══ RTP PT33: MPEG-2 TS (H.264 CBP + AAC) ════▶│   UDP
-  │── M16 GET_PARAMETER keep-alive every 25 s ──▶│
-  │◀──────── SET_PARAMETER wfd_idr_request ──────│   → force keyframe
-  │── M5 trigger TEARDOWN / ◀── M8 TEARDOWN ─────│
-  │── MICE STOP_PROJECTION ─────────────────────▶│
+  |  mDNS: <name>._display._tcp -> port 7250, TXT container_id
+  |
+  |  listen TCP 7236 (RTSP server)
+  |-- TCP connect :7250 ------------------------->|
+  |-- MICE SOURCE_READY {name, rtsp_port, id} -->|
+  |<---------------- TCP connect :7236 -----------|   sink connects *to us*
+  |-- M1 OPTIONS * (Require: org.wfa.wfd1.0) --->|
+  |<------------------------ M2 OPTIONS * -------|
+  |-- M3 GET_PARAMETER (sink capabilities) ----->|
+  |-- M4 SET_PARAMETER (chosen format, URL) ---->|
+  |-- M5 SET_PARAMETER wfd_trigger_method: SETUP>|
+  |<---------------- M6 SETUP (client_port) -----|
+  |<---------------- M7 PLAY --------------------|
+  |== RTP PT33: MPEG-2 TS (H.264 CBP + AAC) ====>|   UDP
+  |-- M16 GET_PARAMETER keep-alive every 25 s -->|
+  |<-------- SET_PARAMETER wfd_idr_request ------|   -> force keyframe
+  |-- M5 trigger TEARDOWN / <-- M8 TEARDOWN -----|
+  |-- MICE STOP_PROJECTION --------------------->|
 ```
 
 Byte-level details, PIDs and timing are documented in the source files and the README.
 
 ## Build phases
 
-### Phase 1: Discovery + signalling ✅
+### Phase 1: Discovery + signalling (done)
 - [x] `DeviceBrowser`: `_display._tcp` + TXT `container_id`, resolved without connecting to 7250
 - [x] `MICEMessage`/`MICEClient`: SOURCE_READY, STOP_PROJECTION, UTF-16LE+BOM friendly name, stable 16-byte source ID
-- [x] `WFDSession`: Mac as RTSP server, source-driven M1–M8, M16 keep-alive, PAUSE/PLAY, IDR requests, timeouts with diagnostics
-- [x] `WFDNegotiation`: parse sink `wfd_video_formats`/`wfd_audio_codecs`/`wfd_client_rtp_ports`; choose 1080p30 → 720p30 → 640x480p60 by bitmap and level
+- [x] `WFDSession`: Mac as RTSP server, source-driven M1-M8, M16 keep-alive, PAUSE/PLAY, IDR requests, timeouts with diagnostics
+- [x] `WFDNegotiation`: parse sink `wfd_video_formats`/`wfd_audio_codecs`/`wfd_client_rtp_ports`; choose 1080p30 -> 720p30 -> 640x480p60 by bitmap and level
 
-### Phase 2: Capture + encoding ✅
+### Phase 2: Capture + encoding (done)
 - [x] ScreenCaptureKit video + system audio, excluding Mira's own windows
 - [x] Constant-rate frame pump (static screens keep PCR and the decoder fed), PTS on an exact 1/fps grid
 - [x] VideoToolbox H.264 Baseline at the negotiated level, CBP flags in SPS, IDR every 2 s or on request
 - [x] AAC-LC 48 kHz stereo with ADTS
 - [x] Test pattern + sync beep source (`--test-pattern`)
 
-### Phase 3: Transport ✅
+### Phase 3: Transport (done)
 - [x] MPEG-2 TS muxer (WFD PIDs, PAT/PMT every 100 ms, PCR on video, AUD per access unit)
 - [x] RTP payload type 33, 7 TS packets per datagram, RTCP SR when the sink gives an RTCP port
 
-### Phase 4: Stability + tooling ✅
+### Phase 4: Stability + tooling (done)
 - [x] Auto-reconnect (3 tries) when a working session drops
 - [x] `Mira doctor`: permissions, firewall, ports, interfaces
 - [x] Full logging of every MICE/RTSP message to `~/Library/Logs/Mira/mira.log`, `--dump-ts`
 - [x] `tools/mock_sink.py` + `tools/e2e.sh`: scripted sink with stream validation, plus ffmpeg decode check
 - [x] Unit tests: MICE bytes, RTSP framing, negotiation, TS mux (incl. CC regression), RTP, ADTS, AAC timing
 
-### Phase 5: UI ✅
+### Phase 5: UI (done)
 - [x] Menu bar popover: discovered displays, connect by IP, resolution/bitrate/audio settings, status/errors, open log
 
-### Phase 6: Distribution ✅
+### Phase 6: Distribution (done)
 - [x] LPCM audio fallback (mandatory WFD format) + `--audio-codec`
 - [x] Display picker, test-pattern toggle, open at login, update check, permission prompts in the app
 - [x] DNS-SD discovery that works with a VPN connected; Local Network hints
 - [x] App icon, universal (arm64 + x86_64) app bundle, DMG, zip, checksums, Homebrew cask (`scripts/package.sh`)
-- [x] GitHub Actions: CI (build, tests, 3× e2e, package) and tag-triggered releases with optional Developer ID signing + notarization
+- [x] GitHub Actions: CI (build, tests, 3x e2e, package) and tag-triggered releases with optional Developer ID signing + notarization
 - [x] MIT license, CHANGELOG, hardware-report issue template, `make release`
 
-### Phase 6b: Beta 2 ✅
+### Phase 6b: Beta 2 (done)
 - [x] MS-MICE security: SESSION_REQUEST, DTLS 1.2 handshake in SECURITY_HANDSHAKE, PIN challenge/response, encrypted TLVArrays + RTP; auto fallback to PIN
 - [x] Adaptive bitrate (RTCP RR, send backlog, repeated IDR requests)
-- [x] Extend mode via virtual display (with fallback), sleep prevention, speaker mute, reconnect on launch, ⌃⌥⌘M
+- [x] Extend mode via virtual display (with fallback), sleep prevention, speaker mute, reconnect on launch, Ctrl+Opt+Cmd+M
 
-### Phase 6c: Beta 3 ✅
+### Phase 6c: Beta 3 (done)
 - [x] App/window sharing with live switching; privacy pause; low-latency mode; 60 fps option
 - [x] 4K via H.264 Constrained High / level 5.x; WFD R2 capability probe
 - [x] In-app updater (GitHub, checksum + signature verified), diagnostics export
 - [x] Windows-PC-as-receiver guide
 
-### Phase 7: Hardware validation ⏳ ← next
+### Phase 7: Hardware validation (next)
 - [ ] Test against a Windows 10/11 PC receiver (no adapter needed)
 - [ ] Join the 4K adapter to Wi-Fi (Windows app) and run the README test-day checklist
 - [ ] Fix whatever the real adapter disagrees with (send `mira.log`)
 - [ ] Measure latency; tune the default buffer and bitrate
-- [ ] Developer ID certificate → notarized releases (add the repository secrets)
+- [ ] Developer ID certificate -> notarized releases (add the repository secrets)
 
 ### Later / maybe
 - [ ] Confirm the DTLS record format for encrypted TLVs/RTP against a real sink
@@ -106,7 +106,7 @@ Byte-level details, PIDs and timing are documented in the source files and the R
 | MPEG-2 TS over RTP (PT 33) | Mandatory WFD media encapsulation; raw RFC 6184 H.264 is not understood by sinks |
 | H.264 Constrained Baseline, no B-frames | Mandatory for every WFD sink; lowest latency |
 | AAC 48 kHz stereo, else LPCM | AAC is compact; LPCM (private stream 1, Android layout) is the format every WFD sink must accept |
-| 200 ms PTS delay with AAC, 150 ms LPCM, 120 ms video-only | AAC adds ~65 ms lookahead; measured headroom ≥110 ms locally |
+| 200 ms PTS delay with AAC, 150 ms LPCM, 120 ms video-only | AAC adds ~65 ms lookahead; measured headroom >=110 ms locally |
 | Re-encode the last frame on static screens | Keeps PCR flowing and avoids sink underflow |
 | Swift only, no dependencies | Everything needed is in VideoToolbox/AudioToolbox/Network/ScreenCaptureKit |
 

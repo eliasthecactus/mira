@@ -6,7 +6,7 @@ import Foundation
 // MARK: - text/parameters bodies
 
 enum WFDParameters {
-    // "name: value" lines → dictionary (names lowercased; WFD names are case-insensitive in practice).
+    // "name: value" lines -> dictionary (names lowercased; WFD names are case-insensitive in practice).
     static func parse(_ body: String) -> [String: String] {
         var out: [String: String] = [:]
         for raw in body.components(separatedBy: "\n") {
@@ -61,7 +61,7 @@ struct WFDResolution: Equatable, CustomStringConvertible {
 
     var is4K: Bool { width >= 3840 }
 
-    // CEA-861 table (WFD spec table 5-10) — only progressive entries we can produce.
+    // CEA-861 table (WFD spec table 5-10) - only progressive entries we can produce.
     static let cea: [WFDResolution] = [
         .init(width: 640,  height: 480,  fps: 60, table: .cea, bit: 0),
         .init(width: 720,  height: 480,  fps: 60, table: .cea, bit: 1),
@@ -325,7 +325,7 @@ struct WFDNegotiatedFormat: Equatable {
 // MARK: - Transport header
 
 enum RTSPTransport {
-    // client_port=19000 or client_port=19000-19001 → (rtp, rtcp?)
+    // client_port=19000 or client_port=19000-19001 -> (rtp, rtcp?)
     static func clientPorts(_ transport: String) -> (rtp: UInt16, rtcp: UInt16?)? {
         for part in transport.split(separator: ";") {
             let t = part.trimmingCharacters(in: .whitespaces)

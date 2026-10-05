@@ -11,8 +11,8 @@ enum CaptureTarget: Equatable, CustomStringConvertible {
     var description: String {
         switch self {
         case .screen: return "entire screen"
-        case .app(_, let name): return "app “\(name)”"
-        case .window(_, let title): return "window “\(title)”"
+        case .app(_, let name): return "app '\(name)'"
+        case .window(_, let title): return "window '\(title)'"
         }
     }
 }

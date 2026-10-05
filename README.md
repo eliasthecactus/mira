@@ -1,11 +1,11 @@
 # Mira
 
-Screen mirroring from macOS to Miracast receivers — specifically the **Microsoft 4K Wireless Display Adapter** — over your normal Wi-Fi network, using Microsoft's *Miracast over Infrastructure* protocol ([MS-MICE]).
+Screen mirroring from macOS to Miracast receivers - specifically the **Microsoft 4K Wireless Display Adapter** - over your normal Wi-Fi network, using Microsoft's *Miracast over Infrastructure* protocol ([MS-MICE]).
 
 ```
-Mac ──TCP 7250──▶ adapter      SOURCE_READY  ("I'm ready, connect to my port 7236")
-Mac ◀──TCP 7236── adapter      RTSP/WFD handshake (M1–M7), driven by the Mac
-Mac ──UDP RTP───▶ adapter      MPEG-2 TS: H.264 Constrained Baseline + AAC/LPCM
+Mac --TCP 7250--> adapter      SOURCE_READY  ("I'm ready, connect to my port 7236")
+Mac <--TCP 7236-- adapter      RTSP/WFD handshake (M1-M7), driven by the Mac
+Mac --UDP RTP---> adapter      MPEG-2 TS: H.264 Constrained Baseline + AAC/LPCM
 ```
 
 > **Status:** the full pipeline works against a local mock sink, and the stream decodes cleanly in ffmpeg. It has **not been tested against a real adapter yet**. See [Testing with a real adapter](#testing-with-a-real-adapter).
@@ -27,12 +27,12 @@ Check the label or the box. Microsoft's own support page says only the 4K model 
 
 A Windows PC can be the receiver. It's the same protocol, Microsoft's own implementation, and it supports PIN pairing and encryption too.
 
-1. **Windows 11:** Settings → System → Optional features → *View features* → add **Wireless Display**. (Windows 10 1809+: Settings → Apps → Optional features → *Add a feature* → **Wireless Display**.)
-2. Settings → System → **Projecting to this PC**:
-   - *Some Windows and Android devices can project to this PC when you say it's OK* → **Available everywhere on secure networks**
-   - *Ask to project to this PC* → **First time only** (Windows asks you to allow the Mac on the first connection: click **Allow** on the PC)
-   - *Require PIN for pairing* → **Never** to start with. Try **First time** later to test Mira's PIN pairing.
-3. Make sure the PC's network is set to **Private** (Settings → Network & internet → your network → *Private network*). Windows only allows projection on private networks.
+1. **Windows 11:** Settings -> System -> Optional features -> *View features* -> add **Wireless Display**. (Windows 10 1809+: Settings -> Apps -> Optional features -> *Add a feature* -> **Wireless Display**.)
+2. Settings -> System -> **Projecting to this PC**:
+   - *Some Windows and Android devices can project to this PC when you say it's OK* -> **Available everywhere on secure networks**
+   - *Ask to project to this PC* -> **First time only** (Windows asks you to allow the Mac on the first connection: click **Allow** on the PC)
+   - *Require PIN for pairing* -> **Never** to start with. Try **First time** later to test Mira's PIN pairing.
+3. Make sure the PC's network is set to **Private** (Settings -> Network & internet -> your network -> *Private network*). Windows only allows projection on private networks.
 4. Open the **Wireless Display** app on the PC (Windows waits for connections while it's open).
 5. On the Mac, with both on the same network:
    ```bash
@@ -65,16 +65,16 @@ After that the Windows PC isn't needed any more.
 Download the latest **Mira-*.dmg** from [Releases](https://github.com/eliasthecactus/mira/releases), open it and drag **Mira** into **Applications**. Requires macOS 13 Ventura or newer, on Apple silicon or Intel.
 
 Releases are currently **not notarized** (that needs a paid Apple Developer ID), so macOS blocks the first launch:
-open Mira once, then go to **System Settings → Privacy & Security → Open Anyway**.
+open Mira once, then go to **System Settings -> Privacy & Security -> Open Anyway**.
 Or run `xattr -dr com.apple.quarantine /Applications/Mira.app` once.
 
 Mira lives in the **menu bar** (it has no Dock icon). On first launch:
 
 | macOS asks for | Why | If you said no |
 |---|---|---|
-| **Local Network** | to find adapters and talk to them | System Settings → Privacy & Security → Local Network → enable Mira. *Without it the display list just stays empty, because macOS reports no error.* |
-| **Screen & System Audio Recording** (when you first mirror) | to capture the screen and sound | System Settings → Privacy & Security → Screen & System Audio Recording → enable Mira, then quit and reopen it. |
-| **Incoming connections** (firewall, if on) | the adapter connects *into* your Mac on TCP 7236 | System Settings → Network → Firewall → Options → allow Mira. |
+| **Local Network** | to find adapters and talk to them | System Settings -> Privacy & Security -> Local Network -> enable Mira. *Without it the display list just stays empty, because macOS reports no error.* |
+| **Screen & System Audio Recording** (when you first mirror) | to capture the screen and sound | System Settings -> Privacy & Security -> Screen & System Audio Recording -> enable Mira, then quit and reopen it. |
+| **Incoming connections** (firewall, if on) | the adapter connects *into* your Mac on TCP 7236 | System Settings -> Network -> Firewall -> Options -> allow Mira. |
 
 Then click the menu bar icon, pick your display and click **Mirror**. If the adapter isn't listed, type its IP address. You can find it in your router's device list.
 
@@ -85,7 +85,7 @@ sudo ln -s /Applications/Mira.app/Contents/MacOS/Mira /usr/local/bin/mira   # op
 mira doctor                          # checks permissions, firewall, ports, network
 mira list                            # find adapters on the network
 mira connect 192.168.1.42            # mirror the screen (Ctrl-C to stop)
-mira connect "Living Room"           # …or by (part of) its name
+mira connect "Living Room"           # ...or by (part of) its name
 mira connect 192.168.1.42 --test-pattern --verbose
 mira displays                        # pick a screen with --display <n>
 mira windows                         # apps and windows for --app / --window
@@ -102,7 +102,7 @@ mira help                            # all options
 | Share | Entire screen | or **one app** (all its windows; everything else, including notifications, stays black) or **one window** (even when covered). Switches live without reconnecting. `--app <name>`, `--window <title>`, list with `mira windows` |
 | Mirror / Extend | Mirror | **Extend** makes the TV a second screen instead of a copy (`--extend`), see below |
 | Display | main display | which screen to mirror: menu or `--display <n>` |
-| Resolution | Best | best of 1080p30 / 720p30 the display supports. **4K** (3840×2160) if the display offers it, else 1080p; needs ~30 Mbit/s of Wi-Fi (`--resolution 4k`) |
+| Resolution | Best | best of 1080p30 / 720p30 the display supports. **4K** (3840x2160) if the display offers it, else 1080p; needs ~30 Mbit/s of Wi-Fi (`--resolution 4k`) |
 | 60 fps | off | smoother motion if the display supports 60 fps (`--fps 60`) |
 | Low latency | off | about 100 ms instead of 200 ms: smaller buffer, LPCM audio, low-latency encoder. Can stutter on weak Wi-Fi (`--low-latency`) |
 | Quality | Auto | adapts the bitrate to your Wi-Fi (backs off on packet loss or congestion, up to 12 Mbit/s); pick a number to fix it (`--bitrate 6`, `--max-bitrate 16`) |
@@ -112,7 +112,7 @@ mira help                            # all options
 | Reconnect on launch | off | reconnect to the last display when Mira starts |
 | Latency buffer | 200 ms (AAC), 150 ms (LPCM), 120 ms (no audio) | `--delay <ms>`; raise it if audio crackles |
 
-**Keyboard shortcuts:** ⌃⌥⌘M starts mirroring to the last display, or stops it. ⌃⌥⌘P **pauses the screen**: the TV keeps showing the last frame (or black, per setting), audio goes silent, and your Mac's screen is private, e.g. while typing a password. Press it again to resume. In the CLI, type `p` + Enter (`b` for black), or send `SIGUSR1`. While mirroring, the Mac doesn't go to sleep.
+**Keyboard shortcuts:** Ctrl+Opt+Cmd+M starts mirroring to the last display, or stops it. Ctrl+Opt+Cmd+P **pauses the screen**: the TV keeps showing the last frame (or black, per setting), audio goes silent, and your Mac's screen is private, e.g. while typing a password. Press it again to resume. In the CLI, type `p` + Enter (`b` for black), or send `SIGUSR1`. While mirroring, the Mac doesn't go to sleep.
 
 **Updates:** Mira checks GitHub once a day. When a new version is out, the menu shows it, and *Install and Restart* downloads it, verifies its SHA-256 checksum and signature, replaces the app (the old one goes to the Trash) and restarts. CLI: `mira update` (`--check` to only look).
 
@@ -120,7 +120,7 @@ mira help                            # all options
 
 ### Extend: the TV as a second screen
 
-In Extend mode Mira creates a virtual monitor the size of the stream, so macOS treats the TV as another screen: drag windows onto it, use it for presenter view. Arrange it in System Settings → Displays like any monitor.
+In Extend mode Mira creates a virtual monitor the size of the stream, so macOS treats the TV as another screen: drag windows onto it, use it for presenter view. Arrange it in System Settings -> Displays like any monitor.
 
 macOS has no public API for virtual monitors. Mira uses the private CoreGraphics one that display utilities such as BetterDisplay and DeskPad use. Mira checks that the virtual display really switched on. If it didn't, Mira mirrors instead and says so (`Mira doctor` tells you up front). On the macOS 27 build used for development it doesn't switch on, so Extend mode has only been exercised up to that fallback.
 
@@ -142,7 +142,7 @@ The message flow, the PIN hash (checked against the spec's test vectors) and DTL
 Requires Xcode 16+ (Swift 5.9+).
 
 ```bash
-make build        # debug build → .build/debug/Mira
+make build        # debug build -> .build/debug/Mira
 make test         # unit tests
 make e2e          # full pipeline against the local mock sink, no hardware needed
 make run          # menu bar app (debug)
@@ -157,7 +157,7 @@ make dist         # universal DMG + zip + checksums + Homebrew cask in dist/
 Do these in order. Each step isolates one layer, so when something fails you'll know which one.
 
 ```bash
-mira doctor                                                # 1. fix anything with ⚠️
+mira doctor                                                # 1. fix anything marked [warn]
 mira list                                                  # 2. adapter should be listed
 mira connect <ip> --test-pattern --no-audio --verbose      # 3. simplest stream
 mira connect <ip> --test-pattern --verbose                 # 4. + audio (beep each second)
@@ -167,12 +167,12 @@ mira connect <ip>                                          # 5. real screen + au
 What success looks like at step 3:
 
 ```
-[MICE] → SOURCE_READY
-[RTSP] Sink connected from 192.168.1.42          ← the adapter connected back (firewall OK)
-[RTSP] ← 200 OK … M1 / M3 / M4 / M5              ← capability negotiation
-[RTSP] Sink H.264 profile …, CEA: …              ← what the adapter supports
-[RTSP] ← SETUP / PLAY
-[Mira] ✅ Mirroring to … at 1920x1080p30
+[MICE] -> SOURCE_READY
+[RTSP] Sink connected from 192.168.1.42          <- the adapter connected back (firewall OK)
+[RTSP] <- 200 OK ... M1 / M3 / M4 / M5              <- capability negotiation
+[RTSP] Sink H.264 profile ..., CEA: ...              <- what the adapter supports
+[RTSP] <- SETUP / PLAY
+[Mira] Mirroring to ... at 1920x1080p30
 ```
 
 The TV should show colour bars with a moving white line and a running frame counter.
@@ -181,12 +181,12 @@ The TV should show colour bars with a moving white line and a running frame coun
 
 | Symptom in the log | Likely cause | Try |
 |---|---|---|
-| `list` finds nothing | Local Network permission off, adapter not on Wi-Fi, different subnet, or mDNS filtered | Check System Settings → Privacy & Security → Local Network. Re-check the setup steps. `dns-sd -B _display._tcp`. Connect by IP (find it in your router's DHCP list) |
-| `Could not reach … :7250 … Connection refused` | not a 4K adapter, or infrastructure mode off | Check the model and firmware |
+| `list` finds nothing | Local Network permission off, adapter not on Wi-Fi, different subnet, or mDNS filtered | Check System Settings -> Privacy & Security -> Local Network. Re-check the setup steps. `dns-sd -B _display._tcp`. Connect by IP (find it in your router's DHCP list) |
+| `Could not reach ... :7250 ... Connection refused` | not a 4K adapter, or infrastructure mode off | Check the model and firmware |
 | `Sink did not connect back to the RTSP port within 15s` | **macOS firewall**, or the adapter wants PIN pairing | `Mira doctor`. Turn the firewall off briefly to test. Try `--security pin` |
 | `The display rejected the PIN` | typo, or the PIN changed | Reconnect and type the PIN currently on the TV |
-| `DTLS handshake … failed` | the adapter's DTLS doesn't match Mira's | Send the log; use `--security off` meanwhile |
-| `Sink rejected M4 …` | the chosen format was refused | `--resolution 720p`, then `--no-audio` |
+| `DTLS handshake ... failed` | the adapter's DTLS doesn't match Mira's | Send the log; use `--security off` meanwhile |
+| `Sink rejected M4 ...` | the chosen format was refused | `--resolution 720p`, then `--no-audio` |
 | Handshake OK but black screen | the media stream isn't accepted | `--no-audio`, `--resolution 720p`, `--bitrate 4`. Check `--dump-ts out.ts` plays in `ffplay` |
 | Picture stutters or freezes | Wi-Fi throughput or jitter | Auto quality should back off by itself (look for `[Bitrate]` lines); otherwise `--bitrate 4`, `--delay 300`, move closer to the router |
 | Audio crackles or drops | audio arrives too late | `--delay 300`. Try `--audio-codec lpcm` |
@@ -200,22 +200,22 @@ The TV should show colour bars with a moving white line and a running frame coun
 sudo tcpdump -i en0 -w mira-adapter.pcap host <adapter-ip>   # in a second terminal while connecting
 ```
 
-If you have a Windows PC, also capture a session from Windows → adapter in the same way. A side-by-side comparison of the RTSP exchange shows exactly what the adapter expects.
+If you have a Windows PC, also capture a session from Windows -> adapter in the same way. A side-by-side comparison of the RTSP exchange shows exactly what the adapter expects.
 
 ---
 
 ## Testing without hardware
 
-`tools/mock_sink.py` is a scripted MICE sink. It listens on 7250, connects back for RTSP, plays the sink side of M1–M8, and checks every RTP/TS packet (sequence numbers, continuity counters, PAT/PMT, PCR interval, and whether each PES arrives before its presentation time).
+`tools/mock_sink.py` is a scripted MICE sink. It listens on 7250, connects back for RTSP, plays the sink side of M1-M8, and checks every RTP/TS packet (sequence numbers, continuity counters, PAT/PMT, PCR interval, and whether each PES arrives before its presentation time).
 
 ```bash
 make e2e                                               # automated: handshake + stream validation + ffmpeg decode
 MIRA_ARGS="" tools/e2e.sh                              # same, capturing the real screen
 python3 tools/mock_sink.py --play                      # interactive: watch the stream in ffplay
-.build/debug/Mira connect 127.0.0.1                    # …in a second terminal
+.build/debug/Mira connect 127.0.0.1                    # ...in a second terminal
 python3 tools/mock_sink.py --advertise "Fake TV"       # appears in `Mira list` and the menu bar app
-python3 tools/mock_sink.py --loss 10                   # drop 10 % of packets, report it via RTCP → watch Mira back off
-python3 tools/mock_sink.py --help                      # --no-audio, --no-m2, --video-formats, --idr-at, …
+python3 tools/mock_sink.py --loss 10                   # drop 10 % of packets, report it via RTCP -> watch Mira back off
+python3 tools/mock_sink.py --help                      # --no-audio, --no-m2, --video-formats, --idr-at, ...
 
 # Security modes need pyOpenSSL (a DTLS server):
 python3 -m venv .venv && .venv/bin/pip install pyopenssl cryptography
@@ -232,7 +232,7 @@ The mock sink is written from the same specs as Mira, so it can't catch a shared
 | Discovery | `Discovery/DeviceBrowser.swift` | DNS-SD `_display._tcp` with TXT `container_id`, resolved per interface (works with a VPN connected) |
 | MICE | `Session/MICEMessage.swift`, `MICEClient.swift` | SOURCE_READY / STOP_PROJECTION, SESSION_REQUEST / PIN challenge; friendly name is UTF-16LE with BOM, as Windows and GNOME send it |
 | Security | `Session/DTLSTunnel.swift` | Network.framework DTLS 1.2 client behind a loopback relay, so its records can travel inside MICE messages and RTP |
-| RTSP/WFD | `Session/WFDSession.swift`, `WFDNegotiation.swift` | Mac is the RTSP server; M1–M8, M16 keep-alive every 25 s, IDR requests, PAUSE/PLAY |
+| RTSP/WFD | `Session/WFDSession.swift`, `WFDNegotiation.swift` | Mac is the RTSP server; M1-M8, M16 keep-alive every 25 s, IDR requests, PAUSE/PLAY |
 | Capture | `Capture/ScreenCapturer.swift` | ScreenCaptureKit video + system audio, letterboxed to 16:9 |
 | Video | `Encoder/H264Encoder.swift`, `H264Bitstream.swift` | VideoToolbox H.264 Baseline (CBP-flagged), no B-frames, IDR every 2 s or on request, AUD + SPS/PPS per keyframe |
 | Audio | `Encoder/AACEncoder.swift`, `LPCMEncoder.swift` | AAC-LC 48 kHz stereo 128 kbit/s (ADTS), or WFD LPCM 16-bit big-endian |
@@ -266,4 +266,4 @@ References: [MS-MICE], Wi-Fi Display Technical Specification, Android's open-sou
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

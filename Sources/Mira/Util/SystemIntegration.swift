@@ -28,7 +28,7 @@ final class SleepGuard {
 // MARK: - Sound only on the TV
 
 // ScreenCaptureKit captures system audio before the output device's mute, so muting
-// the Mac's speakers while mirroring leaves the TV as the only place sound plays —
+// the Mac's speakers while mirroring leaves the TV as the only place sound plays -
 // otherwise you hear everything twice, ~200 ms apart. The previous state is restored
 // afterwards, and on the next launch if Mira quit unexpectedly.
 final class MacAudioMuter {
@@ -160,7 +160,7 @@ final class ExtendedDisplay: @unchecked Sendable {   // immutable; the virtual d
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if CGDisplayIsOnline(vd.displayID) != 0, CGDisplayIsActive(vd.displayID) != 0 {
-                Log.info("Mira", "Virtual display \(vd.displayID) (\(width)×\(height)) is online — the TV is now a second screen")
+                Log.info("Mira", "Virtual display \(vd.displayID) (\(width)x\(height)) is online - the TV is now a second screen")
                 return ExtendedDisplay(display: vd)
             }
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -177,15 +177,15 @@ final class ExtendedDisplay: @unchecked Sendable {   // immutable; the virtual d
 
 // MARK: - Global keyboard shortcuts
 
-// ⌃⌥⌘M start/stop, ⌃⌥⌘P privacy pause. Carbon hot keys need no Accessibility permission.
+// Ctrl+Opt+Cmd+M start/stop, Ctrl+Opt+Cmd+P privacy pause. Carbon hot keys need no Accessibility permission.
 final class GlobalHotKey {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private let id: UInt32
     private let action: () -> Void
 
-    static let toggleMirroring = (keyCode: kVK_ANSI_M, display: "⌃⌥⌘M")
-    static let togglePrivacy = (keyCode: kVK_ANSI_P, display: "⌃⌥⌘P")
+    static let toggleMirroring = (keyCode: kVK_ANSI_M, display: "Ctrl+Opt+Cmd+M")
+    static let togglePrivacy = (keyCode: kVK_ANSI_P, display: "Ctrl+Opt+Cmd+P")
     static let displayString = toggleMirroring.display
 
     init?(id: UInt32, keyCode: Int, modifiers: Int = controlKey | optionKey | cmdKey, action: @escaping () -> Void) {

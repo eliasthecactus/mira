@@ -8,7 +8,7 @@ labels: hardware
 **Receiver**
 - Model (e.g. Microsoft 4K Wireless Display Adapter, LG OLED C1, Windows 11 PC):
 - Firmware version (if known):
-- Joined to Wi-Fi how (Microsoft app, TV settings, …):
+- Joined to Wi-Fi how (Microsoft app, TV settings, ...):
 
 **Mac**
 - macOS version:
@@ -24,4 +24,4 @@ paste here
 ```
 
 **Log**
-Please attach `~/Library/Logs/Mira/mira.log` from the attempt (Menu bar → Log). It contains every message exchanged with the receiver, which is what's needed to fix receiver-specific issues.
+Please attach `~/Library/Logs/Mira/mira.log` from the attempt (Menu bar -> Log). It contains every message exchanged with the receiver, which is what's needed to fix receiver-specific issues.

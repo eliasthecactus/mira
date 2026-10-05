@@ -72,7 +72,7 @@ final class AdaptiveBitrateTests: XCTestCase {
         let c = BitrateController(config: config)
         let t0 = Date()
         c.report(.loss(fraction: 0.01), now: t0)
-        XCTAssertEqual(c.current, 8_000_000, "≤2 % loss is Wi-Fi noise")
+        XCTAssertEqual(c.current, 8_000_000, "<=2 % loss is Wi-Fi noise")
         c.report(.loss(fraction: 0.05), now: t0)
         XCTAssertEqual(c.current, 5_600_000)
         c.report(.loss(fraction: 0.05), now: t0.addingTimeInterval(0.5))

@@ -7,17 +7,17 @@ import Network
 // and the sink connects in (for MS-MICE, after we send SOURCE_READY). The source
 // then drives capability negotiation:
 //
-//   M1  source → sink  OPTIONS *                      (Require: org.wfa.wfd1.0)
-//   M2  sink → source  OPTIONS *
-//   M3  source → sink  GET_PARAMETER                  (ask sink capabilities)
-//   M4  source → sink  SET_PARAMETER                  (chosen format, presentation URL)
-//   M5  source → sink  SET_PARAMETER wfd_trigger_method: SETUP
-//   M6  sink → source  SETUP  .../streamid=0          (Transport: client_port=…)
-//   M7  sink → source  PLAY
-//   ··· RTP (MPEG-2 TS) flows to the sink ···
-//   M16 source → sink  GET_PARAMETER (empty)          keep-alive, before the session timeout
-//   M5  source → sink  SET_PARAMETER wfd_trigger_method: TEARDOWN, then
-//   M8  sink → source  TEARDOWN
+//   M1  source -> sink  OPTIONS *                      (Require: org.wfa.wfd1.0)
+//   M2  sink -> source  OPTIONS *
+//   M3  source -> sink  GET_PARAMETER                  (ask sink capabilities)
+//   M4  source -> sink  SET_PARAMETER                  (chosen format, presentation URL)
+//   M5  source -> sink  SET_PARAMETER wfd_trigger_method: SETUP
+//   M6  sink -> source  SETUP  .../streamid=0          (Transport: client_port=...)
+//   M7  sink -> source  PLAY
+//   --- RTP (MPEG-2 TS) flows to the sink ---
+//   M16 source -> sink  GET_PARAMETER (empty)          keep-alive, before the session timeout
+//   M5  source -> sink  SET_PARAMETER wfd_trigger_method: TEARDOWN, then
+//   M8  sink -> source  TEARDOWN
 final class WFDSession {
 
     enum State: String {
@@ -91,7 +91,7 @@ final class WFDSession {
     // MARK: - Lifecycle
 
     // Starts the "sink must connect back within N seconds" timer. Call it when
-    // SOURCE_READY goes out — a PIN prompt before that can take as long as the user needs.
+    // SOURCE_READY goes out - a PIN prompt before that can take as long as the user needs.
     func armConnectTimeout(_ seconds: TimeInterval = 15) {
         queue.async { [self] in
             connectTimeout?.cancel()
@@ -195,7 +195,7 @@ final class WFDSession {
         switch host {
         case .ipv4(let a): return "\(a)"
         case .ipv6(let a):
-            // IPv4-mapped IPv6 (::ffff:a.b.c.d) → a.b.c.d
+            // IPv4-mapped IPv6 (::ffff:a.b.c.d) -> a.b.c.d
             let s = "\(a)".components(separatedBy: "%").first ?? "\(a)"
             return s.hasPrefix("::ffff:") ? String(s.dropFirst(7)) : s
         case .name(let n, _): return n
@@ -222,7 +222,7 @@ final class WFDSession {
     // MARK: - Sending
 
     private func send(_ msg: RTSPMessage) {
-        Log.info("RTSP", "→ \(msg.summary)")
+        Log.info("RTSP", "-> \(msg.summary)")
         Log.debug("RTSP", "\n" + msg.fullText)
         connection?.send(content: msg.serialize(), completion: .contentProcessed { err in
             if let err { Log.error("RTSP", "Send failed: \(err)") }
@@ -247,7 +247,7 @@ final class WFDSession {
     // MARK: - Dispatch
 
     private func handle(_ msg: RTSPMessage) {
-        Log.info("RTSP", "← \(msg.summary)")
+        Log.info("RTSP", "<- \(msg.summary)")
         Log.debug("RTSP", "\n" + msg.fullText)
         switch msg.kind {
         case .response:
@@ -286,7 +286,7 @@ final class WFDSession {
                 Log.warn("RTSP", "Sink asked for RTP over TCP; only UDP is implemented")
             }
             if var n = negotiated, n.rtpPort0 != ports.rtp {
-                Log.info("RTSP", "SETUP overrides RTP port \(n.rtpPort0) → \(ports.rtp)")
+                Log.info("RTSP", "SETUP overrides RTP port \(n.rtpPort0) -> \(ports.rtp)")
                 n.rtpPort0 = ports.rtp
                 negotiated = n
             }
@@ -306,7 +306,7 @@ final class WFDSession {
             } else if state != .playing, let n = negotiated {
                 state = .playing
                 startKeepalive()
-                Log.info("RTSP", "PLAY — streaming \(n.resolution) to \(sinkIP):\(n.rtpPort0)")
+                Log.info("RTSP", "PLAY - streaming \(n.resolution) to \(sinkIP):\(n.rtpPort0)")
                 onPlay?(n, sinkIP, n.rtpPort0, rtcpPort)
             }
 
@@ -354,7 +354,7 @@ final class WFDSession {
         // Some sinks never send M2; don't wait on it forever.
         queue.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self, self.gotM1Reply, !self.sentM3 else { return }
-            Log.warn("RTSP", "No M2 OPTIONS from sink after 3s — continuing with M3")
+            Log.warn("RTSP", "No M2 OPTIONS from sink after 3s - continuing with M3")
             self.gotM2 = true
             self.maybeSendM3()
         }
@@ -424,10 +424,10 @@ final class WFDSession {
             Log.warn("RTSP", "Sink sent no parsable wfd_video_formats: \(caps.raw["wfd_video_formats"] ?? "(missing)")")
         }
         Log.info("RTSP", "Sink audio: \(caps.audioCodecs.map(\.descriptor).joined(separator: ", ").nilIfEmpty ?? "none"); RTP port \(caps.rtpPort0)")
-        // Anything beyond the basics (R2 codecs, vendor extensions) — useful for bring-up.
+        // Anything beyond the basics (R2 codecs, vendor extensions) - useful for bring-up.
         let known: Set<String> = ["wfd_video_formats", "wfd_audio_codecs", "wfd_client_rtp_ports", "wfd_content_protection"]
         for (name, value) in caps.raw.sorted(by: { $0.key < $1.key }) where !known.contains(name) {
-            Log.info("RTSP", "Sink \(name): \(value.count > 200 ? String(value.prefix(200)) + "…" : value)")
+            Log.info("RTSP", "Sink \(name): \(value.count > 200 ? String(value.prefix(200)) + "..." : value)")
         }
     }
 

@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag like v0.2.0 or v0.3.0-beta.1 (`make release VERSION=…` does the bump + tag).
+# Push a tag like v0.2.0 or v0.3.0-beta.1 (`make release VERSION=...` does the bump + tag).
 # Tags with a suffix (-beta.1, -rc.1) become GitHub pre-releases.
 #
 # Optional repository secrets for a signed + notarized build (otherwise ad-hoc signed):

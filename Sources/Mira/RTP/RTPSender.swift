@@ -17,7 +17,7 @@ final class RTPSender {
     var packetsSent: UInt64 { statsLock.withLock { _packetsSent } }
     var bytesSent: UInt64 { statsLock.withLock { _bytesSent } }
     var sendErrors: UInt64 { statsLock.withLock { _sendErrors } }
-    // Packets handed to the network stack but not yet sent — grows when Wi-Fi can't keep up.
+    // Packets handed to the network stack but not yet sent - grows when Wi-Fi can't keep up.
     var backlog: Int { statsLock.withLock { Int(_submitted &- _packetsSent &- _sendErrors) } }
 
     init(localPort: UInt16) {
@@ -34,7 +34,7 @@ final class RTPSender {
                                 using: params)
         conn.stateUpdateHandler = { state in
             switch state {
-            case .ready:  Log.info("RTP", "UDP \(self.localPort) → \(host):\(port) ready")
+            case .ready:  Log.info("RTP", "UDP \(self.localPort) -> \(host):\(port) ready")
             case .failed(let e): Log.error("RTP", "UDP sender failed: \(e)")
             default: break
             }

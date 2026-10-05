@@ -2,13 +2,18 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.4]
+
+### Changed
+- ASCII only: no emoji or special characters in log output, CLI output, docs or source. Doctor uses [ok] / [warn] / [info]; shortcuts are written Ctrl+Opt+Cmd+M / Ctrl+Opt+Cmd+P. Names from the system or network are transliterated in logs (the name sent to the TV is unchanged).
+
 ## [0.2.0-beta.3]
 
 ### Added
 - **Share one app or one window** instead of the whole screen (everything else stays black), switchable live during a session. `--app`, `--window`, `mira windows`.
-- **Privacy pause** (⌃⌥⌘P, menu button, `p` in the CLI, `SIGUSR1`): freezes or blanks the TV and silences audio, e.g. while typing a password.
+- **Privacy pause** (Ctrl+Opt+Cmd+P, menu button, `p` in the CLI, `SIGUSR1`): freezes or blanks the TV and silences audio, e.g. while typing a password.
 - **Low-latency mode:** about 100 ms instead of 200 ms (LPCM audio, smaller buffer, VideoToolbox low-latency rate control). `--low-latency`.
-- **4K:** 3840×2160 with H.264 (Constrained High, level 5.1/5.2) when the display advertises it. `--resolution 4k`; auto quality goes up to 30 Mbit/s for 4K. `--probe-wfd2` logs the display's Miracast 2 capabilities.
+- **4K:** 3840x2160 with H.264 (Constrained High, level 5.1/5.2) when the display advertises it. `--resolution 4k`; auto quality goes up to 30 Mbit/s for 4K. `--probe-wfd2` logs the display's Miracast 2 capabilities.
 - **60 fps** option in the menu.
 - **In-app updates:** downloads the newest GitHub release, verifies checksum and signature, replaces the app and restarts. `mira update`.
 - **Diagnostics export:** one zip with log, doctor output, system/network info and crash reports. `mira diagnose`.
@@ -28,7 +33,7 @@ Still untested with a real Microsoft 4K Wireless Display Adapter.
 - **Extend mode:** use the TV as a second screen via a virtual display (`--extend`); falls back to mirroring where macOS doesn't allow virtual displays.
 - **Sound only on TV:** mutes the Mac's speakers while mirroring and restores them afterwards, even after a crash.
 - The Mac no longer sleeps while mirroring.
-- Reconnect to the last display on launch; global shortcut ⌃⌥⌘M to start/stop.
+- Reconnect to the last display on launch; global shortcut Ctrl+Opt+Cmd+M to start/stop.
 - `Mira doctor` reports whether Extend mode works on this Mac.
 - Mock sink: `--security encrypted|pin`, `--pin`, `--loss` (with RTCP receiver reports).
 
@@ -44,8 +49,8 @@ First public build. The full Miracast-over-Infrastructure pipeline works end-to-
 
 ### Added
 - MS-MICE signalling (SOURCE_READY / STOP_PROJECTION over TCP 7250)
-- Wi-Fi Display RTSP source (M1–M8, keep-alives, IDR requests, pause/resume)
-- Capability negotiation: 1080p30 → 720p30 → 640×480 by sink support and H.264 level
+- Wi-Fi Display RTSP source (M1-M8, keep-alives, IDR requests, pause/resume)
+- Capability negotiation: 1080p30 -> 720p30 -> 640x480 by sink support and H.264 level
 - Screen capture with ScreenCaptureKit, including system audio; choice of display
 - H.264 Constrained Baseline (VideoToolbox), AAC-LC or LPCM audio
 - MPEG-2 TS muxer and RTP (payload type 33) transport

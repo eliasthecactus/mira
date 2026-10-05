@@ -12,9 +12,9 @@ enum MICESecurity: String, CaseIterable {
 // MS-MICE signalling channel: TCP from the Mac to the sink's port 7250.
 //
 //   none:       SOURCE_READY
-//   encrypted:  SECURITY_HANDSHAKE ⇄ (DTLS) → SOURCE_READY;              RTP encrypted
-//   pin:        SESSION_REQUEST → SECURITY_HANDSHAKE ⇄ (DTLS) → PIN_CHALLENGE ⇄
-//               PIN_RESPONSE → SOURCE_READY;  TLVArrays and RTP encrypted
+//   encrypted:  SECURITY_HANDSHAKE <-> (DTLS) -> SOURCE_READY;              RTP encrypted
+//   pin:        SESSION_REQUEST -> SECURITY_HANDSHAKE <-> (DTLS) -> PIN_CHALLENGE <->
+//               PIN_RESPONSE -> SOURCE_READY;  TLVArrays and RTP encrypted
 //
 // After SOURCE_READY the sink opens a TCP connection back to our RTSP port. The 7250
 // connection stays open for the whole session; either side may send STOP_PROJECTION.
@@ -94,7 +94,7 @@ final class MICEClient: @unchecked Sendable {   // all state confined to `queue`
             case .waiting(let err):
                 // .waiting means the connect attempt failed but NW would retry later;
                 // for a projection that is a hard failure.
-                Log.error("MICE", "Cannot reach \(self.host):\(self.port) — \(err)")
+                Log.error("MICE", "Cannot reach \(self.host):\(self.port) - \(err)")
                 self.fail(err)
             case .failed(let err):
                 Log.error("MICE", "Connection failed: \(err)")
@@ -114,7 +114,7 @@ final class MICEClient: @unchecked Sendable {   // all state confined to `queue`
         guard let conn = connection else { tunnel?.stop(); return }
         connection = nil
         let msg = MICEMessage.stopProjection(friendlyName: friendlyName, sourceID: sourceID)
-        Log.info("MICE", "→ STOP_PROJECTION")
+        Log.info("MICE", "-> STOP_PROJECTION")
         let finish: (Data) -> Void = { [tunnel] data in
             Log.debug("MICE", "STOP_PROJECTION on the wire (\(data.count) bytes), conn state \(conn.state)")
             conn.send(content: data, completion: .contentProcessed { _ in conn.cancel() })
@@ -167,7 +167,7 @@ final class MICEClient: @unchecked Sendable {   // all state confined to `queue`
             fail(MICEError.pinRejected("no way to ask for the PIN (pass --pin in the CLI)"))
             return
         }
-        Log.info("MICE", "Waiting for the PIN shown on the display…")
+        Log.info("MICE", "Waiting for the PIN shown on the display...")
         pinProvider { [weak self] pin in
             guard let self else { return }
             self.queue.async {
@@ -212,15 +212,15 @@ final class MICEClient: @unchecked Sendable {   // all state confined to `queue`
         if encryptsMessages, let tunnel {
             tunnel.encrypt(msg.tlvBytes) { [weak self] record in
                 let data = MICEMessage.serialize(command: msg.command, body: record)
-                Log.info("MICE", "→ \(msg.commandName) (encrypted, \(data.count) bytes)")
+                Log.info("MICE", "-> \(msg.commandName) (encrypted, \(data.count) bytes)")
                 self?.write(data)
             }
             return
         }
         let data = msg.serialize()
-        if quiet { Log.debug("MICE", "→ \(msg.commandName) (\(data.count) bytes)") }
-        else { Log.info("MICE", "→ \(msg.commandName) (\(data.count) bytes)") }
-        Log.debug("MICE", "  \(data.prefix(96).hexString)\(data.count > 96 ? " …" : "")")
+        if quiet { Log.debug("MICE", "-> \(msg.commandName) (\(data.count) bytes)") }
+        else { Log.info("MICE", "-> \(msg.commandName) (\(data.count) bytes)") }
+        Log.debug("MICE", "  \(data.prefix(96).hexString)\(data.count > 96 ? " ..." : "")")
         write(data)
     }
 
@@ -282,11 +282,11 @@ final class MICEClient: @unchecked Sendable {   // all state confined to `queue`
         let process: (Data) -> Void = { [weak self] body in
             guard let self else { return }
             guard let tlvs = try? MICEMessage.parseTLVs(body) else {
-                Log.warn("MICE", "← \(name) with malformed TLVs: \(body.prefix(64).hexString)")
+                Log.warn("MICE", "<- \(name) with malformed TLVs: \(body.prefix(64).hexString)")
                 return
             }
             let msg = MICEMessage(version: frame.version, command: frame.command, tlvs: tlvs)
-            Log.info("MICE", "← \(name)")
+            Log.info("MICE", "<- \(name)")
             switch MICEMessage.Command(rawValue: frame.command) {
             case .stopProjection:
                 if !self.stopped { self.stopped = true; self.onStopProjection?() }

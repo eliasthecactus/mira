@@ -10,7 +10,7 @@ extension AACEncoder: AudioEncoding {}
 
 // Wi-Fi Display LPCM: the one audio format every WFD sink must support. No encoder
 // delay, ~1.5 Mbit/s. Each PES carries a 4-byte header and 6 "audio frames" of 80
-// stereo samples (480 samples = 10 ms) of 16-bit big-endian PCM — the layout used
+// stereo samples (480 samples = 10 ms) of 16-bit big-endian PCM - the layout used
 // by Android's Wi-Fi Display source.
 final class LPCMEncoder: AudioEncoding, @unchecked Sendable {   // used only from MediaPipeline.audioQueue
 

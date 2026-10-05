@@ -17,7 +17,7 @@ enum Diagnostics {
         try? FileManager.default.removeItem(at: work)
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
 
-        Log.info("Mira", "Collecting diagnostics…")
+        Log.info("Mira", "Collecting diagnostics...")
         Log.flush()
 
         func write(_ file: String, _ text: String) {
@@ -127,7 +127,7 @@ enum Diagnostics {
             DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
                 browser.stop()
                 let list = lock.withLock { found }
-                cont.resume(returning: list.isEmpty ? ["(none — check Local Network permission and that the display is on this network)"] : list)
+                cont.resume(returning: list.isEmpty ? ["(none - check Local Network permission and that the display is on this network)"] : list)
             }
         }
     }

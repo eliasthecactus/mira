@@ -6,7 +6,7 @@ import Foundation
 enum CLI {
 
     static let usage = """
-    Mira — Miracast (MS-MICE) screen mirroring for macOS
+    Mira - Miracast (MS-MICE) screen mirroring for macOS
 
     USAGE
       Mira                              Menu bar app
@@ -86,7 +86,7 @@ enum CLI {
                 print("Apps (use --app <name>):")
                 for a in items.apps { print("  \(a.name)\t\(a.bundleID)\t\(a.windowCount) window\(a.windowCount == 1 ? "" : "s")") }
                 print("\nWindows (use --window <id or title>):")
-                for w in items.windows { print("  \(w.id)\t\(w.appName) — \(w.title)  (\(Int(w.size.width))×\(Int(w.size.height)))") }
+                for w in items.windows { print("  \(w.id)\t\(w.appName) - \(w.title)  (\(Int(w.size.width))x\(Int(w.size.height)))") }
                 exit(0)
             case "update":
                 let checkOnly = args.contains("--check")
@@ -140,16 +140,16 @@ enum CLI {
                 print("  \(d.name)\t\(d.ipAddress):\(d.port)\(d.containerID.map { "\tcontainer_id=\($0)" } ?? "")")
             }
         }
-        print("Scanning for \(DeviceBrowser.serviceType) for \(Int(timeout))s…")
+        print("Scanning for \(DeviceBrowser.serviceType) for \(Int(timeout))s...")
         browser.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
             browser.stop()
             if found.isEmpty {
                 print("""
                 No sinks found. Check that:
-                  • the adapter is a Microsoft 4K Wireless Display Adapter (the older model has no Wi-Fi mode),
-                  • it was joined to this Wi-Fi network with the Microsoft Wireless Display Adapter app,
-                  • this Mac is on the same network/VLAN (guest networks often block device-to-device traffic).
+                  - the adapter is a Microsoft 4K Wireless Display Adapter (the older model has no Wi-Fi mode),
+                  - it was joined to this Wi-Fi network with the Microsoft Wireless Display Adapter app,
+                  - this Mac is on the same network/VLAN (guest networks often block device-to-device traffic).
                 Tip: `dns-sd -B _display._tcp` shows raw mDNS results. You can also connect by IP.
                 """)
             }
@@ -189,20 +189,20 @@ enum CLI {
             case "--app":
                 let q = try value(a)
                 guard let app = try shareableItems().app(matching: q) else {
-                    throw ParseError(description: "No running app with a window matches “\(q)” (see `Mira windows`)")
+                    throw ParseError(description: "No running app with a window matches '\(q)' (see `Mira windows`)")
                 }
                 opts.target = .app(bundleID: app.bundleID, name: app.name)
             case "--window":
                 let q = try value(a)
                 guard let w = try shareableItems().window(matching: q) else {
-                    throw ParseError(description: "No window matches “\(q)” (see `Mira windows`)")
+                    throw ParseError(description: "No window matches '\(q)' (see `Mira windows`)")
                 }
                 opts.target = .window(id: w.id, title: w.title)
             case "--display":
                 let n: Int = try number(a)
                 let displays = DisplayInfo.all()
                 guard displays.indices.contains(n - 1) else {
-                    throw ParseError(description: "--display must be 1…\(displays.count) (see `Mira displays`)")
+                    throw ParseError(description: "--display must be 1...\(displays.count) (see `Mira displays`)")
                 }
                 opts.displayID = displays[n - 1].id
             case "--no-audio": opts.prefs.audio = false
@@ -267,13 +267,13 @@ enum CLI {
         }
         guard let target else { throw ParseError(description: "connect needs an IP address or device name") }
         if !fixedBitrate, let maxBitrate { opts.prefs.bitrate = maxBitrate }
-        Log.info("Mira", "Mira \(AppInfo.version) — log file: \(Log.logFileURL.path)")
+        Log.info("Mira", "Mira \(AppInfo.version) - log file: \(Log.logFileURL.path)")
 
         let controller = MiraController(options: opts)
         let console = ConsoleCommands(controller: controller)
         // PIN entry in the terminal, if the display asks for one and --pin wasn't given.
         controller.pinProvider = { completion in
-            FileHandle.standardError.write(Data("\n🔑 Enter the PIN shown on the TV: ".utf8))
+            FileHandle.standardError.write(Data("\nEnter the PIN shown on the TV: ".utf8))
             console.awaitLine(completion)
         }
         console.start()
@@ -288,16 +288,16 @@ enum CLI {
             switch status {
             case .streaming(let d, let res):
                 everStreamed = true
-                Log.info("Mira", "✅ Mirroring to \(d.name) at \(res). Commands: p = pause screen (freeze), b = pause (black), q = stop. Ctrl-C also stops.")
+                Log.info("Mira", "Mirroring to \(d.name) at \(res). Commands: p = pause screen (freeze), b = pause (black), q = stop. Ctrl-C also stops.")
             case .failed:
                 // The controller already logged the reason.
-                Log.info("Mira", "❌ Failed. Full log: \(Log.logFileURL.path)")
+                Log.info("Mira", "Failed. Full log: \(Log.logFileURL.path)")
                 exitSoon(everStreamed ? 0 : 1)
             case .idle:
                 if everStreamed {
                     Log.info("Mira", "Session ended")
                 } else {
-                    Log.error("Mira", "❌ Session ended before streaming started. Full log: \(Log.logFileURL.path)")
+                    Log.error("Mira", "Session ended before streaming started. Full log: \(Log.logFileURL.path)")
                 }
                 exitSoon(everStreamed ? 0 : 1)
             case .connecting:
@@ -307,7 +307,7 @@ enum CLI {
 
         let sig = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sig.setEventHandler {
-            Log.info("Mira", "Stopping…")
+            Log.info("Mira", "Stopping...")
             controller.stopAndWait()
             Log.flush()
             exit(0)
@@ -332,7 +332,7 @@ enum CLI {
         if isIPAddress(target) {
             controller.connect(to: MiracastDevice(name: target, ipAddress: target, port: micePort))
         } else {
-            Log.info("Mira", "Looking for a sink named “\(target)”…")
+            Log.info("Mira", "Looking for a sink named '\(target)'...")
             var done = false
             controller.onDevicesChanged = { devices in
                 guard !done, let d = devices.first(where: { $0.name.localizedCaseInsensitiveContains(target) }) else { return }
@@ -343,7 +343,7 @@ enum CLI {
             controller.startDiscovery()
             DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
                 guard !done else { return }
-                Log.error("Mira", "No sink matching “\(target)” found. Try `Mira list`, or connect by IP.")
+                Log.error("Mira", "No sink matching '\(target)' found. Try `Mira list`, or connect by IP.")
                 Log.flush()
                 exit(1)
             }
@@ -395,7 +395,7 @@ enum CLI {
                                 } else if !isApp, let w = items.window(matching: query) {
                                     self.controller.setTarget(.window(id: w.id, title: w.title))
                                 } else {
-                                    FileHandle.standardError.write(Data("Nothing matches “\(query)” (see `Mira windows`)\n".utf8))
+                                    FileHandle.standardError.write(Data("Nothing matches '\(query)' (see `Mira windows`)\n".utf8))
                                 }
                             }
                         } else {
@@ -412,7 +412,7 @@ enum CLI {
 
         func togglePrivacy(_ mode: MediaPipeline.PrivacyMode) {
             let now = controller.togglePrivacy(mode)
-            Log.info("Mira", now == .off ? "▶️  Screen resumed" : "⏸  Screen paused (\(now.rawValue)) — type p again to resume")
+            Log.info("Mira", now == .off ? "Screen resumed" : "Screen paused (\(now.rawValue)) - type p again to resume")
         }
     }
 

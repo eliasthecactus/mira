@@ -1,7 +1,7 @@
 import Foundation
 
 // A Miracast-over-Infrastructure sink. `port` is the MS-MICE signalling port
-// (7250), not RTSP — in MICE the sink connects to *our* RTSP port.
+// (7250), not RTSP - in MICE the sink connects to *our* RTSP port.
 struct MiracastDevice: CustomStringConvertible, Equatable {
     static let defaultMICEPort: UInt16 = 7250
 

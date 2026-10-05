@@ -17,8 +17,8 @@ struct MiraStats {
 
 // Orchestrates one projection:
 //   1. listen for RTSP on 7236          (WFDSession)
-//   2. [security handshake / PIN] then SOURCE_READY → sink:7250   (MICEClient)
-//   3. sink connects in, M1…M7           (WFDSession)
+//   2. [security handshake / PIN] then SOURCE_READY -> sink:7250   (MICEClient)
+//   3. sink connects in, M1...M7           (WFDSession)
 //   4. stream MPEG-TS/RTP                (MediaPipeline)
 final class MiraController: @unchecked Sendable {   // state is confined to `queue`
 
@@ -200,7 +200,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         }
     }
 
-    // Sink buffer (PTS − PCR). Low-latency mode trims it to what encode + capture need.
+    // Sink buffer (PTS - PCR). Low-latency mode trims it to what encode + capture need.
     static func defaultDelay(_ audio: WFDAudioCodec?, lowLatency: Bool = false) -> Double {
         switch (audio?.format, lowLatency) {
         case ("AAC", false):  return 0.2
@@ -281,7 +281,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
                 // Receivers like Windows' "Projecting to this PC" may first ask the person at
                 // the screen to accept, so allow time for that before giving up / trying PIN.
                 let wait: TimeInterval = 30
-                Log.info("Mira", "Waiting for \(device.name) to connect back — if the display shows an \"allow projection\" prompt, accept it")
+                Log.info("Mira", "Waiting for \(device.name) to connect back - if the display shows an \"allow projection\" prompt, accept it")
                 self.session?.armConnectTimeout(wait)
             }
             m.pinProvider = { [weak self] completion in
@@ -309,7 +309,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
 
     private func startPipeline(device: MiracastDevice, format: WFDNegotiatedFormat, sinkIP: String,
                                rtpPort: UInt16, rtcpPort: UInt16?, gen: Int) {
-        // 4K needs about 2.5× the bits of 1080p for the same quality.
+        // 4K needs about 2.5x the bits of 1080p for the same quality.
         let maxBitrate = options.adaptiveBitrate && format.resolution.is4K ? options.prefs.bitrate * 5 / 2 : options.prefs.bitrate
         let cfg = MediaPipeline.Config(format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort,
                                        localRTPPort: options.localRTPPort, bitrate: maxBitrate,
@@ -410,7 +410,7 @@ enum MiraError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .miceFailed(let d, let e):
-            return "Could not reach \(d.name) at \(d.ipAddress):\(d.port) (\(e)). Is the adapter joined to this Wi-Fi network and powered on? Is Mira allowed under System Settings → Privacy & Security → Local Network? (The original non-4K Microsoft adapter does not support Miracast over Wi-Fi at all.)"
+            return "Could not reach \(d.name) at \(d.ipAddress):\(d.port) (\(e)). Is the adapter joined to this Wi-Fi network and powered on? Is Mira allowed under System Settings -> Privacy & Security -> Local Network? (The original non-4K Microsoft adapter does not support Miracast over Wi-Fi at all.)"
         }
     }
 }
