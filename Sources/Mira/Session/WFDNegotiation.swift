@@ -186,7 +186,8 @@ struct WFDVideoCodecEntry: Equatable {
             return r.requiredH265LevelBit
         case (.h265, .wfdx):
             // wfdx shares the H.264 level bitmap: map 3.1/4/4.1/5/5.1 onto it.
-            return [0x01: 0x01, 0x02: 0x04, 0x04: 0x08, 0x08: 0x20, 0x10: 0x40][r.requiredH265LevelBit] ?? 0x40
+            let r2ToWfdx: [UInt16: UInt16] = [0x01: 0x01, 0x02: 0x04, 0x04: 0x08, 0x08: 0x20, 0x10: 0x40]
+            return r2ToWfdx[r.requiredH265LevelBit] ?? 0x40
         default:
             return UInt16(r.requiredLevelBit)
         }
@@ -453,7 +454,9 @@ struct WFDNegotiatedFormat: Equatable {
     // nil for H.264, whose levels allow far more than Wi-Fi can carry.
     var maxBitrate: Int? {
         guard isHEVC else { return nil }
-        let r2Level = flavor == .r2 ? levelBit : ([0x01: 0x01, 0x02: 0x01, 0x04: 0x02, 0x08: 0x04, 0x10: 0x04, 0x20: 0x08][levelBit] ?? 0x10)
+        // wfdx shares the H.264 level bitmap (3.1 ... 5.2); map it onto the R2 HEVC bits.
+        let wfdxToR2: [UInt16: UInt16] = [0x01: 0x01, 0x02: 0x01, 0x04: 0x02, 0x08: 0x04, 0x10: 0x04, 0x20: 0x08]
+        let r2Level: UInt16 = flavor == .r2 ? levelBit : (wfdxToR2[levelBit] ?? 0x10)
         switch r2Level {
         case 0x01: return 10_000_000      // 3.1
         case 0x02: return 12_000_000      // 4
