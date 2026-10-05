@@ -27,17 +27,17 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>MiraVersion</key>
-	<string>0.2.0-beta.6</string>
+	<string>0.2.0-beta.7</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_display._tcp</string>
 		<string>_googlecast._tcp</string>
 		<string>_airplay._tcp</string>
 	</array>
-	<key>NSHumanReadableCopyright</key>
-	<string>MIT License</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Mira reads the pairing QR code that hotel and venue TVs show, so it can connect to them. Nothing is recorded.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT License</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Mira finds Miracast displays on your network and streams your screen to them.</string>
 </dict>
