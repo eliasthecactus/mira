@@ -229,7 +229,10 @@ final class DeviceListViewController: NSViewController {
     // Rebuilds the Share menu from the apps and windows on screen right now.
     private func refreshTargets() {
         Task { @MainActor in
-            guard let items = try? await ShareableItems.load() else { return }
+            // Listing windows needs Screen Recording permission; apps don't.
+            let items = try? await ShareableItems.load()
+            let apps = items?.apps ?? ShareableItems.runningApps()
+            Log.debug("UI", "Share menu: \(apps.count) apps, " + (items.map { "\($0.windows.count) windows" } ?? "windows need Screen Recording permission"))
             let menu = NSMenu()
             @MainActor func add(_ title: String, _ target: CaptureTarget?, indent: Bool = false) {
                 let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -242,18 +245,36 @@ final class DeviceListViewController: NSViewController {
             add("Share: Entire screen", .screen)
             menu.addItem(.separator())
             add("Only one app (others stay black)", nil)
-            for a in items.apps { add(a.name, .app(bundleID: a.bundleID, name: a.name), indent: true) }
+            for a in apps { add(a.name, .app(bundleID: a.bundleID, name: a.name), indent: true) }
             menu.addItem(.separator())
             add("Only one window", nil)
-            for w in items.windows.prefix(30) {
-                let title = w.title.count > 40 ? String(w.title.prefix(40)) + "..." : w.title
-                add("\(w.appName) - \(title)", .window(id: w.id, title: w.title), indent: true)
+            if let items {
+                for w in items.windows.prefix(30) {
+                    let title = w.title.count > 40 ? String(w.title.prefix(40)) + "..." : w.title
+                    add("\(w.appName) - \(title)", .window(id: w.id, title: w.title), indent: true)
+                }
+            } else {
+                let ask = NSMenuItem(title: "Allow Screen Recording to list windows...",
+                                     action: #selector(requestScreenRecording), keyEquivalent: "")
+                ask.target = self
+                ask.indentationLevel = 1
+                menu.addItem(ask)
             }
             targetPopup.menu = menu
             if targetPopup.selectedItem?.representedObject == nil { targetPopup.selectItem(at: 0) }
-            for item in menu.items where item.representedObject == nil && !item.isSeparatorItem { item.isEnabled = false }
+            for item in menu.items where item.representedObject == nil && !item.isSeparatorItem && item.action == nil {
+                item.isEnabled = false
+            }
             targetPopup.autoenablesItems = false
         }
+    }
+
+    @objc private func requestScreenRecording() {
+        CGRequestScreenCaptureAccess()
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        statusLabel.stringValue = "Enable Mira under Screen & System Audio Recording, then quit and reopen Mira."
+        resizeToFit()
+        refreshTargets()
     }
 
     @objc private func targetChosen() {

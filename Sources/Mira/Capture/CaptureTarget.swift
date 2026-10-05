@@ -45,6 +45,20 @@ struct ShareableItems {
         return ShareableItems(apps: Self.unique(apps), windows: wins)
     }
 
+    // Running apps from NSWorkspace: needs no Screen Recording permission, so the Share
+    // menu can offer "one app" even before the permission is granted.
+    static func runningApps() -> [App] {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let apps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier != me }
+            .compactMap { a -> App? in
+                guard let id = a.bundleIdentifier else { return nil }
+                return App(bundleID: id, name: a.localizedName ?? id, windowCount: 0)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return unique(apps)
+    }
+
     private static func unique(_ apps: [App]) -> [App] {
         var seen = Set<String>()
         return apps.filter { seen.insert($0.bundleID).inserted }

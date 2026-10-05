@@ -4,6 +4,9 @@ All notable changes to Mira. Versions follow [Semantic Versioning](https://semve
 
 ## [0.2.0-beta.4]
 
+### Fixed
+- The Share menu only offered "Entire screen" until Screen Recording permission was granted. Apps are now listed without it, and the window section offers to request the permission.
+
 ### Changed
 - ASCII only: no emoji or special characters in log output, CLI output, docs or source. Doctor uses [ok] / [warn] / [info]; shortcuts are written Ctrl+Opt+Cmd+M / Ctrl+Opt+Cmd+P. Names from the system or network are transliterated in logs (the name sent to the TV is unchanged).
 
