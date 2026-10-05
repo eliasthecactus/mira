@@ -111,12 +111,16 @@ final class QRScannerWindowController: NSWindowController, NSWindowDelegate, AVC
         }
         cameraPopup.addItems(withTitles: cameras.map(\.localizedName))
         // Prefer an iPhone (Continuity Camera): better optics for a code across the room.
-        let preferred = cameras.firstIndex { cam in
-            if #available(macOS 14.0, *) { return cam.deviceType == .continuityCamera }
-            return false
-        } ?? 0
+        let preferred = cameras.firstIndex(where: Self.isContinuityCamera) ?? 0
         cameraPopup.selectItem(at: preferred)
         use(cameras[preferred])
+    }
+
+    private static func isContinuityCamera(_ cam: AVCaptureDevice) -> Bool {
+        if #available(macOS 14.0, *) {
+            return cam.deviceType == AVCaptureDevice.DeviceType.continuityCamera
+        }
+        return false
     }
 
     @objc private func cameraChosen() {
