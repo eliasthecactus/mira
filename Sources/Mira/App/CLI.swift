@@ -6,11 +6,11 @@ import Foundation
 enum CLI {
 
     static let usage = """
-    Mira - Miracast (MS-MICE) screen mirroring for macOS
+    Mira - screen mirroring from macOS to Miracast (MS-MICE) and Google Cast displays
 
     USAGE
       Mira                              Menu bar app
-      Mira list [--timeout <s>]         Scan the network for Miracast-over-Wi-Fi sinks
+      Mira list [--timeout <s>]         Scan the network for Miracast and Google Cast displays
       Mira connect <ip|name> [options]  Mirror headless until Ctrl-C
       Mira displays                     List this Mac's displays (for --display)
       Mira windows                      List apps and windows that can be shared (for --app / --window)
@@ -40,6 +40,7 @@ enum CLI {
       --keep-mac-audio        Don't mute the Mac's speakers while mirroring
       --delay <ms>            Sink buffer / latency (default: 200 AAC, 150 LPCM, 120 video-only)
       --name <text>           Name shown on the TV (default: this Mac's name)
+      --cast / --miracast     Protocol when connecting by IP (default: detected)
       --port <n>              Sink's MICE port (default 7250)
       --rtsp-port <n>         Local RTSP port the sink connects to (default 7236)
       --rtp-port <n>          Local UDP source port for RTP (default 19000)
@@ -135,25 +136,30 @@ enum CLI {
             if args[i] == "--timeout", i + 1 < args.count, let t = TimeInterval(args[i + 1]) { timeout = t; i += 2 }
             else { throw ParseError(description: "Unknown option \(args[i])") }
         }
-        let browser = DeviceBrowser()
+        let browsers = [DeviceBrowser(kind: .miracast), DeviceBrowser(kind: .googleCast)]
         var found: [MiracastDevice] = []
-        browser.onDeviceFound = { d in
-            if !found.contains(d) {
-                found.append(d)
-                print("  \(d.name)\t\(d.ipAddress):\(d.port)\(d.containerID.map { "\tcontainer_id=\($0)" } ?? "")")
+        for browser in browsers {
+            browser.onDeviceFound = { d in
+                DispatchQueue.main.async {
+                    guard !found.contains(where: { $0.kind == d.kind && $0.serviceName == d.serviceName }) else { return }
+                    found.append(d)
+                    let extra = d.containerID.map { "\tcontainer_id=\($0)" } ?? d.model.map { "\t\($0)" } ?? ""
+                    print("  \(d.name)\t\(d.kind.label)\t\(d.ipAddress):\(d.port)\(extra)")
+                }
             }
+            browser.start()
         }
-        print("Scanning for \(DeviceBrowser.serviceType) for \(Int(timeout))s...")
-        browser.start()
+        print("Scanning for Miracast (\(DeviceBrowser.serviceType)) and Google Cast (\(DeviceBrowser.castServiceType)) displays for \(Int(timeout))s...")
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-            browser.stop()
+            browsers.forEach { $0.stop() }
             if found.isEmpty {
                 print("""
-                No sinks found. Check that:
+                No displays found. Check that:
                   - the adapter is a Microsoft 4K Wireless Display Adapter (the older model has no Wi-Fi mode),
-                  - it was joined to this Wi-Fi network with the Microsoft Wireless Display Adapter app,
+                    or a Chromecast / Google TV / TV with Chromecast built-in,
+                  - it is on this Wi-Fi network (the Microsoft adapter needs the Microsoft Wireless Display Adapter app once),
                   - this Mac is on the same network/VLAN (guest networks often block device-to-device traffic).
-                Tip: `dns-sd -B _display._tcp` shows raw mDNS results. You can also connect by IP.
+                Tip: `dns-sd -B _display._tcp` / `dns-sd -B _googlecast._tcp` show raw mDNS results. You can also connect by IP.
                 """)
             }
             Log.flush()
@@ -171,7 +177,8 @@ enum CLI {
         var fixedBitrate = false
         var maxBitrate: Int?
         var target: String?
-        var micePort = MiracastDevice.defaultMICEPort
+        var micePort: UInt16?
+        var forcedKind: MiracastDevice.Kind?
         var i = 0
 
         func value(_ name: String) throws -> String {
@@ -266,6 +273,8 @@ enum CLI {
                 opts.ptsDelay = Double(ms) / 1000
             case "--name": opts.friendlyName = try value(a)
             case "--port": micePort = try number(a)
+            case "--cast": forcedKind = .googleCast
+            case "--miracast": forcedKind = .miracast
             case "--rtsp-port": opts.rtspPort = try number(a)
             case "--rtp-port": opts.localRTPPort = try number(a)
             case "--dump-ts": opts.dumpTS = URL(fileURLWithPath: try value(a))
@@ -341,7 +350,21 @@ enum CLI {
         _ = statsTimer
 
         if isIPAddress(target) {
-            controller.connect(to: MiracastDevice(name: target, ipAddress: target, port: micePort))
+            let connect = { (kind: MiracastDevice.Kind) in
+                controller.connect(to: MiracastDevice(name: target, ipAddress: target, port: micePort, kind: kind))
+            }
+            if let kind = forcedKind ?? (micePort != nil ? .miracast : nil) {
+                connect(kind)
+            } else {
+                // Which protocol? Ask the device (Cast answers on 8009, MS-MICE on 7250).
+                DeviceProbe.kind(of: target) { kind in
+                    DispatchQueue.main.async {
+                        if let kind { Log.info("Mira", "\(target) is a \(kind.label) device") }
+                        else { Log.info("Mira", "\(target) did not answer on 8009 or 7250; trying Miracast") }
+                        connect(kind ?? .miracast)
+                    }
+                }
+            }
         } else {
             Log.info("Mira", "Looking for a sink named '\(target)'...")
             var done = false

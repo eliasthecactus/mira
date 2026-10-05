@@ -33,12 +33,14 @@ final class BitrateController {
     enum Signal: CustomStringConvertible {
         case loss(fraction: Double)      // RTCP fraction lost, 0...1
         case sendCongestion(backlog: Int)
+        case framesDropped(Int)          // receiver fell behind (Cast: too much unacknowledged)
         case idrRequest
 
         var description: String {
             switch self {
             case .loss(let f): return String(format: "%.1f%% packet loss", f * 100)
             case .sendCongestion(let b): return "send backlog \(b) packets"
+            case .framesDropped(let n): return "receiver behind, \(n) frames dropped"
             case .idrRequest: return "display requested a keyframe"
             }
         }

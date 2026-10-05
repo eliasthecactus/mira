@@ -74,7 +74,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private(set) var status: Status = .idle { didSet { if status != oldValue { onStatusChanged?(status) } } }
 
     private let queue = DispatchQueue(label: "mira.control")
-    private let browser = DeviceBrowser()
+    private let browsers = [DeviceBrowser(kind: .miracast), DeviceBrowser(kind: .googleCast)]
     private var devices: [MiracastDevice] = []
     private var mice: MICEClient?
     private var session: WFDSession?
@@ -86,6 +86,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private var currentSecurity: MICESecurity = .none
     private var extended: ExtendedDisplay?
     private var uibc: UIBCServer?
+    private var cast: CastSession?
     private var extendFailure: String?
     private static var extendUnavailable: String?      // remembered for the rest of the run
 
@@ -112,26 +113,29 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     // MARK: - Discovery
 
     func startDiscovery() {
-        browser.onDeviceFound = { [weak self] device in
-            guard let self else { return }
-            self.queue.async {
-                self.devices.removeAll { $0.name == device.name }
-                self.devices.append(device)
-                self.devices.sort { $0.name < $1.name }
-                self.onDevicesChanged?(self.devices)
+        for browser in browsers {
+            let kind = browser.kind
+            browser.onDeviceFound = { [weak self] device in
+                guard let self else { return }
+                self.queue.async {
+                    self.devices.removeAll { $0.kind == kind && $0.serviceName == device.serviceName }
+                    self.devices.append(device)
+                    self.devices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    self.onDevicesChanged?(self.devices)
+                }
             }
-        }
-        browser.onDeviceLost = { [weak self] name in
-            guard let self else { return }
-            self.queue.async {
-                self.devices.removeAll { $0.name == name }
-                self.onDevicesChanged?(self.devices)
+            browser.onDeviceLost = { [weak self] name in
+                guard let self else { return }
+                self.queue.async {
+                    self.devices.removeAll { $0.kind == kind && $0.serviceName == name }
+                    self.onDevicesChanged?(self.devices)
+                }
             }
+            browser.start()
         }
-        browser.start()
     }
 
-    func stopDiscovery() { browser.stop() }
+    func stopDiscovery() { browsers.forEach { $0.stop() } }
 
     // MARK: - Projection
 
@@ -258,6 +262,10 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     }
 
     private func startSession(_ device: MiracastDevice, security: MICESecurity, gen: Int) {
+        if device.kind == .googleCast {
+            startCastSession(device, gen: gen)
+            return
+        }
         var prefs = options.prefs
         prefs.allowHEVC = prefs.allowHEVC && VideoEncoder.hevcAvailable
         if options.remoteInput {
@@ -336,14 +344,21 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio, lowLatency: options.lowLatency),
             dumpTS: options.dumpTS,
             tunnel: currentSecurity == .none ? nil : mice?.tunnel))
-        let cfg = MediaPipeline.Config(format: stream, transport: transport, bitrate: maxBitrate,
+        runPipeline(device: device, stream: stream, transport: transport, bitrate: maxBitrate,
+                    inputBackChannel: format.uibc != nil, gen: gen)
+    }
+
+    private func runPipeline(device: MiracastDevice, stream: StreamFormat, transport: MediaTransport,
+                             bitrate: Int, keyframeInterval: Int32 = 2, inputBackChannel: Bool, gen: Int) {
+        let cfg = MediaPipeline.Config(format: stream, transport: transport, bitrate: bitrate,
                                        testPattern: options.testPattern,
                                        displayID: options.displayID,
                                        adaptiveBitrate: options.adaptiveBitrate,
                                        extendedDisplayID: extended?.displayID,
                                        muteMac: options.muteMac,
                                        lowLatency: options.lowLatency,
-                                       target: options.target)
+                                       target: options.target,
+                                       keyframeIntervalSeconds: keyframeInterval)
         let p = MediaPipeline(config: cfg)
         p.onFatalError = { [weak self] err in
             guard let self else { return }
@@ -353,9 +368,9 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             }
         }
         pipeline = p
-        if format.uibc != nil, let server = uibc {
+        if inputBackChannel, let server = uibc {
             server.isSuspended = { [weak p] in p?.inputSuspended ?? true }
-            server.activate(streamWidth: format.resolution.width, streamHeight: format.resolution.height) { [weak p] in
+            server.activate(streamWidth: stream.width, streamHeight: stream.height) { [weak p] in
                 p?.inputRegion()
             }
         } else if let server = uibc {
@@ -369,7 +384,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
                 self.queue.async {
                     guard gen == self.generation else { return }
                     self.reconnectAttempts = 0
-                    self.status = .streaming(device, format.resolution.description + (format.isHEVC ? " HEVC" : ""))
+                    self.status = .streaming(device, stream.description)
                 }
             } catch {
                 self.queue.async {
@@ -378,6 +393,73 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
                 }
             }
         }
+    }
+
+    // MARK: - Google Cast
+
+    private func startCastSession(_ device: MiracastDevice, gen: Int) {
+        if options.remoteInput { Log.info("Cast", "Input from the TV is not available with Google Cast") }
+        let prefs = options.prefs
+        let size: (Int, Int)
+        switch prefs.resolution {
+        case .p2160: size = (3840, 2160)
+        case .p720: size = (1280, 720)
+        case .auto, .p1080: size = (1920, 1080)
+        }
+        let hevc = VideoEncoder.hevcAvailable
+        let videoCodecs: [VideoCodec]
+        switch prefs.codec {
+        case .hevc: videoCodecs = hevc ? [.h265, .h264] : [.h264]
+        case .h264: videoCodecs = [.h264]
+        case .auto: videoCodecs = hevc && size.0 > 1920 ? [.h265, .h264] : [.h264]
+        }
+        let audioCodecs: [StreamFormat.Audio] = prefs.audio
+            ? (CompressedAudioEncoder.opusAvailable && prefs.audioCodec != .aac ? [.opus, .aac] : [.aac]) : []
+        let maxBitrate = size.0 > 1920 ? prefs.bitrate * 5 / 2 : prefs.bitrate
+        let delayMs = options.ptsDelay.map { Int($0 * 1000) } ?? (options.lowLatency ? 150 : 250)
+
+        let session = CastSession(host: device.ipAddress, port: device.port, queue: queue)
+        cast = session
+        session.makeOffer = {
+            CastOffer.make(videoCodecs: videoCodecs, audioCodecs: audioCodecs, width: size.0, height: size.1,
+                           fps: prefs.fps, maxBitRate: maxBitrate, targetDelayMs: delayMs)
+        }
+        session.onAnswer = { [weak self] offer, answer in
+            guard let self, gen == self.generation else { return }
+            self.startCastPipeline(device: device, offer: offer, answer: answer, size: size,
+                                   maxBitrate: maxBitrate, gen: gen)
+        }
+        session.onClosed = { [weak self] error in
+            guard let self, gen == self.generation else { return }
+            self.sessionEnded(device: device, error: error)
+        }
+        session.start()
+    }
+
+    private func startCastPipeline(device: MiracastDevice, offer: CastOffer, answer: CastAnswer,
+                                   size: (Int, Int), maxBitrate: Int, gen: Int) {
+        var video: CastTransport.StreamSetup?
+        var audio: CastTransport.StreamSetup?
+        for (i, index) in answer.sendIndexes.enumerated() {
+            guard let s = offer.streams.first(where: { $0.index == index }) else { continue }
+            let setup = CastTransport.StreamSetup(offer: s, receiverSSRC: answer.ssrcs[i])
+            if s.kind == .video, video == nil { video = setup }
+            if s.kind == .audio, audio == nil { audio = setup }
+        }
+        guard let videoSetup = video else {
+            sessionEnded(device: device, error: CastSession.SessionError.answerRejected("the device picked no video stream"))
+            return
+        }
+        let fit = answer.fit(width: size.0, height: size.1, fps: options.prefs.fps)
+        let bitrate = min(maxBitrate, answer.maxVideoBitRate ?? maxBitrate)
+        let stream = StreamFormat(width: fit.width, height: fit.height, fps: fit.fps,
+                                  codec: videoSetup.offer.codecName == "hevc" ? .h265 : .h264,
+                                  h264Profile: .restrictedHigh2, h264LevelBit: 0x40,
+                                  audio: audio.map { $0.offer.codecName == "opus" ? .opus : .aac })
+        let transport = CastTransport(receiverIP: device.ipAddress, udpPort: answer.udpPort, video: video, audio: audio)
+        // Cast receivers ask for keyframes when they need one; periodic ones only waste bits.
+        runPipeline(device: device, stream: stream, transport: transport, bitrate: bitrate,
+                    keyframeInterval: 10, inputBackChannel: false, gen: gen)
     }
 
     private func sessionEnded(device: MiracastDevice, error: Error?) {
@@ -422,6 +504,8 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private func tearDownCurrent(reason: String) {
         generation += 1
         pipeline?.stop(); pipeline = nil
+        cast?.onClosed = nil
+        cast?.stop(); cast = nil
         uibc?.stop(); uibc = nil
         session?.onClosed = nil
         session?.teardown(); session = nil

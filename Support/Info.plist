@@ -31,6 +31,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_display._tcp</string>
+		<string>_googlecast._tcp</string>
 	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>

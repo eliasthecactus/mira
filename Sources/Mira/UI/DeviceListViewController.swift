@@ -405,7 +405,12 @@ final class DeviceListViewController: NSViewController {
             return
         }
         Settings.lastManualIP = ip
-        onMirrorRequested?(MiracastDevice(name: ip, ipAddress: ip))
+        statusLabel.stringValue = "Checking \(ip)..."
+        DeviceProbe.kind(of: ip) { [weak self] kind in
+            DispatchQueue.main.async {
+                self?.onMirrorRequested?(MiracastDevice(name: ip, ipAddress: ip, kind: kind ?? .miracast))
+            }
+        }
     }
 
     @objc private func settingsChanged() {
@@ -507,7 +512,7 @@ extension DeviceListViewController: NSTableViewDataSource, NSTableViewDelegate {
         let device = devices[row]
         var isActive = false
         switch status {
-        case .streaming(let d, _), .connecting(let d): isActive = d.ipAddress == device.ipAddress
+        case .streaming(let d, _), .connecting(let d): isActive = d.ipAddress == device.ipAddress && d.kind == device.kind
         default: break
         }
         let w = tableView.bounds.width > 0 ? tableView.bounds.width : Self.width - 24
@@ -519,7 +524,8 @@ extension DeviceListViewController: NSTableViewDataSource, NSTableViewDelegate {
         nameLabel.frame = NSRect(x: 4, y: 20, width: w - 90, height: 16)
         nameLabel.autoresizingMask = [.width]
 
-        let ipLabel = NSTextField(labelWithString: device.ipAddress)
+        let detail = [device.kind.label, device.model, device.ipAddress].compactMap { $0 }.joined(separator: " - ")
+        let ipLabel = NSTextField(labelWithString: detail)
         ipLabel.font = .systemFont(ofSize: 10)
         ipLabel.textColor = .secondaryLabelColor
         ipLabel.frame = NSRect(x: 4, y: 4, width: w - 90, height: 14)

@@ -13,8 +13,19 @@ import dnssd
 // Note: if macOS Local Network access is denied for Mira, the browse simply never
 // reports anything - there is no error to detect. The UI explains this when
 // nothing turns up.
+//
+// Google Cast devices register "<id>._googlecast._tcp" (port 8009) with TXT fn=<friendly
+// name>, md=<model> and ca=<capability bits>; only those with video output are shown.
 final class DeviceBrowser: @unchecked Sendable {   // all state confined to `queue`
     static let serviceType = "_display._tcp"
+    static let castServiceType = "_googlecast._tcp"
+
+    let kind: MiracastDevice.Kind
+    var serviceType: String { kind == .miracast ? Self.serviceType : Self.castServiceType }
+
+    init(kind: MiracastDevice.Kind = .miracast) {
+        self.kind = kind
+    }
 
     var onDeviceFound: ((MiracastDevice) -> Void)?
     var onDeviceLost: ((String) -> Void)?
@@ -31,6 +42,9 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
         var ref: DNSServiceRef?
         var port: UInt16 = 0
         var containerID: String?
+        var friendlyName: String?
+        var model: String?
+        var capabilities: Int?
         var done = false
 
         init(name: String, interfaceIndex: UInt32, browser: DeviceBrowser) {
@@ -51,7 +65,7 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
             guard browseRef == nil else { return }
             var ref: DNSServiceRef?
             let ctx = Unmanaged.passUnretained(self).toOpaque()
-            let err = DNSServiceBrowse(&ref, 0, 0, DeviceBrowser.serviceType, nil, { _, flags, ifIndex, err, name, type, domain, ctx in
+            let err = DNSServiceBrowse(&ref, 0, 0, serviceType, nil, { _, flags, ifIndex, err, name, type, domain, ctx in
                 guard let ctx else { return }
                 let me = Unmanaged<DeviceBrowser>.fromOpaque(ctx).takeUnretainedValue()
                 guard err == kDNSServiceErr_NoError, let name, let type, let domain else {
@@ -67,7 +81,7 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
             }
             DNSServiceSetDispatchQueue(ref, queue)
             browseRef = ref
-            Log.info("Discovery", "Browsing \(Self.serviceType)")
+            Log.info("Discovery", "Browsing \(serviceType)")
         }
     }
 
@@ -113,6 +127,9 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
             Log.debug("Discovery", "resolved \(r.name) -> \(String(cString: host!))")
             r.port = UInt16(bigEndian: port)
             r.containerID = DeviceBrowser.txtValue("container_id", txtLen, txt)
+            r.friendlyName = DeviceBrowser.txtValue("fn", txtLen, txt)
+            r.model = DeviceBrowser.txtValue("md", txtLen, txt)
+            r.capabilities = DeviceBrowser.txtValue("ca", txtLen, txt).flatMap { Int($0) }
             me.lookupAddress(r, host: String(cString: host!))
         }, ctx)
         guard err == kDNSServiceErr_NoError, let ref else {
@@ -145,9 +162,15 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
             var sin = UnsafeRawPointer(addr).assumingMemoryBound(to: sockaddr_in.self).pointee
             var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &sin.sin_addr, &buf, socklen_t(buf.count))
-            let device = MiracastDevice(name: r.name, ipAddress: String(cString: buf), port: r.port,
-                                        containerID: r.containerID)
-            Log.info("Discovery", "Found \(device)\(r.containerID.map { " container_id=\($0)" } ?? "")")
+            // Cast: bit 0 of "ca" = video output; speakers and audio groups don't have it.
+            if me.kind == .googleCast, let ca = r.capabilities, ca & 0x01 == 0 {
+                Log.debug("Discovery", "Ignoring \(r.friendlyName ?? r.name): audio-only Cast device")
+                me.finish(r, error: nil)
+                return
+            }
+            let device = MiracastDevice(name: r.friendlyName ?? r.name, ipAddress: String(cString: buf), port: r.port,
+                                        containerID: r.containerID, kind: me.kind, model: r.model, serviceName: r.name)
+            Log.info("Discovery", "Found \(device)\(r.containerID.map { " container_id=\($0)" } ?? "")\(r.model.map { " model=\($0)" } ?? "")")
             me.onDeviceFound?(device)
             me.finish(r, error: nil)
         }, ctx)

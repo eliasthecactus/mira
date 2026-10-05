@@ -87,13 +87,15 @@ enum Settings {
     static var lastDevice: MiracastDevice? {
         get {
             guard let name = d.string(forKey: "lastDeviceName"), let ip = d.string(forKey: "lastDeviceIP") else { return nil }
-            let port = d.object(forKey: "lastDevicePort") as? Int ?? Int(MiracastDevice.defaultMICEPort)
-            return MiracastDevice(name: name, ipAddress: ip, port: UInt16(port))
+            let kind = d.string(forKey: "lastDeviceKind").flatMap(MiracastDevice.Kind.init) ?? .miracast
+            let port = d.object(forKey: "lastDevicePort") as? Int ?? Int(kind.defaultPort)
+            return MiracastDevice(name: name, ipAddress: ip, port: UInt16(port), kind: kind)
         }
         set {
             d.set(newValue?.name, forKey: "lastDeviceName")
             d.set(newValue?.ipAddress, forKey: "lastDeviceIP")
             d.set(newValue.map { Int($0.port) }, forKey: "lastDevicePort")
+            d.set(newValue?.kind.rawValue, forKey: "lastDeviceKind")
         }
     }
 
