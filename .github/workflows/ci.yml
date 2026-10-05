@@ -54,7 +54,7 @@ jobs:
           # HEVC via wfd2 (only if this machine can encode HEVC; otherwise Mira must fall back to H.264)
           if .build/debug/Mira doctor | grep -q "HEVC (H.265) encoder available"; then EXPECT="--expect-codec hevc"; else EXPECT="--expect-codec h264"; fi
           MIRA_ARGS="--test-pattern --codec hevc" E2E_OUT="$RUNNER_TEMP/e2e-hevc" E2E_DURATION=5 \
-            tools/e2e.sh $T --wfd2 hevc $EXPECT
+            tools/e2e.sh --timing-tolerance-ms=400 --wfd2 hevc $EXPECT   # software HEVC on the VM
           # A sink that rejects unknown M3 parameters: Mira retries with the R1 basics
           E2E_EXPECT_LOG="retrying with the basic parameters" E2E_OUT="$RUNNER_TEMP/e2e-strict" E2E_DURATION=4 \
             tools/e2e.sh $T --strict-m3 --wfd2 hevc
