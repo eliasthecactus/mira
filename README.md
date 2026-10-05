@@ -8,6 +8,8 @@ Mac <--TCP 7236-- adapter      RTSP/WFD handshake (M1-M7), driven by the Mac
 Mac --UDP RTP---> adapter      MPEG-2 TS: H.264 Constrained Baseline + AAC/LPCM
 ```
 
+> **Built with AI:** Claude Opus 5.5 (Anthropic) was used heavily to build this project: protocol research, code, tests and documentation.
+
 > **Status:** the full pipeline works against a local mock sink, and the stream decodes cleanly in ffmpeg. It has **not been tested against a real adapter yet**. See [Testing with a real adapter](#testing-with-a-real-adapter).
 
 ---
