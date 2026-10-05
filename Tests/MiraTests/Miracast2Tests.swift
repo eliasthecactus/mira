@@ -192,7 +192,9 @@ final class HEVCBitstreamTests: XCTestCase {
         let idr = Data([0x26, 0x01, 0xAF])
         let au = HEVCBitstream.annexB(nalus: [vps, sps, pps, idr], parameterSets: [vps, sps, pps])
         let sc: [UInt8] = [0, 0, 0, 1]
-        XCTAssertEqual([UInt8](au), sc + [0x46, 0x01, 0x50] + sc + [UInt8](vps) + sc + [UInt8](sps) + sc + [UInt8](pps) + sc + [UInt8](idr))
+        var expected: [UInt8] = sc + [0x46, 0x01, 0x50]
+        for nal in [vps, sps, pps, idr] { expected += sc + [UInt8](nal) }
+        XCTAssertEqual([UInt8](au), expected)
         XCTAssertEqual(HEVCBitstream.nalType(Data(HEVCBitstream.accessUnitDelimiter)), 35)
         XCTAssertEqual(HEVCBitstream.nalType(idr), 19)
     }
