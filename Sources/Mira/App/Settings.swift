@@ -61,6 +61,15 @@ enum Settings {
         get { d.bool(forKey: "lowLatency") }
         set { d.set(newValue, forKey: "lowLatency") }
     }
+    static var codec: WFDNegotiatedFormat.CodecChoice {
+        get { d.string(forKey: "codec").flatMap(WFDNegotiatedFormat.CodecChoice.init) ?? .auto }
+        set { d.set(newValue.rawValue, forKey: "codec") }
+    }
+    // UIBC: off by default - it lets whoever is at the TV control this Mac.
+    static var remoteInput: Bool {
+        get { d.bool(forKey: "remoteInput") }
+        set { d.set(newValue, forKey: "remoteInput") }
+    }
     static var fps: Int {
         get { d.object(forKey: "fps") as? Int ?? 30 }
         set { d.set(newValue, forKey: "fps") }
@@ -107,6 +116,8 @@ enum Settings {
         o.lowLatency = lowLatency
         o.prefs.lowLatency = lowLatency
         o.prefs.fps = fps
+        o.prefs.codec = codec
+        o.remoteInput = remoteInput
         // A remembered display that is no longer connected falls back to the main one.
         if let id = displayID, DisplayInfo.all().contains(where: { $0.id == id }) { o.displayID = id }
         return o

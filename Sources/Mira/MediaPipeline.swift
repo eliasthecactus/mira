@@ -2,7 +2,7 @@ import Foundation
 import CoreMedia
 import CoreVideo
 
-// Capture -> H.264/AAC -> MPEG-TS -> RTP -> UDP, for one negotiated WFD session.
+// Capture -> H.264 or H.265 / AAC or LPCM -> MPEG-TS -> RTP -> UDP, for one negotiated WFD session.
 //
 // Timing: everything uses the host clock. PCR = time since start; PTS = capture
 // time + `ptsDelay`, which gives the sink a fixed buffer to absorb encode time and
@@ -48,7 +48,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     var onFatalError: ((Error) -> Void)?
 
     let config: Config
-    private let encoder: H264Encoder
+    private let encoder: VideoEncoder
     private var audioEncoder: AudioEncoding?
     private let muxer: MPEGTSMuxer
     private let packetizer = RTPMP2TPacketizer()
@@ -79,6 +79,16 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     private var privacy: PrivacyMode = .off
     private var privacyFrame: CVPixelBuffer?
     var privacyMode: PrivacyMode { privacyLock.withLock { privacy } }
+    private var pausedForInput = false   // privacyLock
+    // Input from the TV is ignored while the TV can't see the real screen.
+    var inputSuspended: Bool { privacyLock.withLock { privacy != .off || pausedForInput || stopped } }
+
+    // What the TV shows, in global screen coordinates, for mapping its input back.
+    func inputRegion() -> InputInjector.Region? {
+        let r = config.format.resolution
+        guard let rect = (source as? ScreenCapturer)?.contentRect() else { return nil }
+        return .init(content: rect, streamWidth: r.width, streamHeight: r.height)
+    }
 
     var stats: Stats {
         var s = statsLock.withLock { _stats }
@@ -99,16 +109,20 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     init(config: Config) {
         self.config = config
         let r = config.format.resolution
-        encoder = H264Encoder(config: .init(width: Int32(r.width), height: Int32(r.height),
-                                            fps: Int32(config.fps), bitrate: config.bitrate,
-                                            levelBit: config.format.levelBit,
-                                            highProfile: config.format.isHighProfile,
-                                            lowLatency: config.lowLatency))
-        switch config.format.audio?.format {
-        case "AAC":  muxer = MPEGTSMuxer(audio: .aac)
-        case "LPCM": muxer = MPEGTSMuxer(audio: .lpcm)
-        default:     muxer = MPEGTSMuxer(audio: nil)
+        let f = config.format
+        encoder = VideoEncoder(config: .init(width: Int32(r.width), height: Int32(r.height),
+                                             fps: Int32(config.fps), bitrate: config.bitrate,
+                                             codec: f.codec,
+                                             levelBit: f.h264LevelBit,
+                                             h264Profile: f.h264Profile,
+                                             lowLatency: config.lowLatency))
+        let audio: MPEGTSMuxer.AudioFormat?
+        switch f.audio?.format {
+        case "AAC":  audio = .aac
+        case "LPCM": audio = .lpcm
+        default:     audio = nil
         }
+        muxer = MPEGTSMuxer(audio: audio, hevc: f.isHEVC)
         rtpSender = RTPSender(localPort: config.localRTPPort)
         let maxRate = config.bitrate
         bitrate = BitrateController(config: .init(
@@ -118,6 +132,9 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     }
 
 
+
+    // Encoder timestamps start here (seconds); the warm-up frame uses 0.
+    static let encoderEpoch: Double = 1
 
     static func hostNow() -> Double { CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) }
 
@@ -149,9 +166,12 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
         }
         bitrate.onChange = { [weak self] bps in self?.encoder.setBitrate(bps) }
 
+        let hevc = config.format.isHEVC
         encoder.onEncoded = { [weak self] sb, isKey in
-            guard let self, let au = H264Bitstream.accessUnit(from: sb, isKeyframe: isKey) else { return }
-            let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb))
+            let au = hevc ? HEVCBitstream.accessUnit(from: sb, isKeyframe: isKey)
+                          : H264Bitstream.accessUnit(from: sb, isKeyframe: isKey)
+            guard let self, let au else { return }
+            let pts = self.baseHost + CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sb)) - Self.encoderEpoch
             self.muxQueue.async { self.muxVideo(au, captureHost: pts, isKeyframe: isKey) }
         }
         try encoder.start()
@@ -296,6 +316,7 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
     }
 
     func setPaused(_ p: Bool) {
+        privacyLock.withLock { pausedForInput = p }
         muxQueue.async { self.paused = p }
         if !p { encoder.forceKeyframe() }
     }
@@ -327,7 +348,10 @@ final class MediaPipeline: @unchecked Sendable {   // mux state is confined to m
             let fps = Double(self.config.fps)
             let slot = max(self.lastFrameSlot + 1, Int64(((Self.hostNow() - self.baseHost) * fps).rounded()))
             self.lastFrameSlot = slot
-            let pts = CMTime(seconds: self.baseHost + Double(slot) / fps, preferredTimescale: 90_000)
+            // Session-relative timestamps: VideoToolbox's HEVC encoder falls behind real
+            // time when fed large absolute (host clock) timestamps.
+            let pts = CMTime(value: CMTimeValue(Self.encoderEpoch) * CMTimeValue(fps) + CMTimeValue(slot),
+                             timescale: CMTimeScale(fps))
             self.encoder.encode(frame, pts: pts, duration: duration)
         }
         t.resume()

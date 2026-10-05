@@ -52,6 +52,7 @@ final class WFDSession {
     var onPause: (() -> Void)?
     var onResume: (() -> Void)?
     var onIDRRequest: (() -> Void)?
+    var onUIBCSetting: ((Bool) -> Void)?
     var onClosed: ((Error?) -> Void)?
 
     let rtspPort: UInt16
@@ -80,6 +81,11 @@ final class WFDSession {
     private var localIP = ""
     private var rtcpPort: UInt16?
     private var teardownRequested = false
+    // Readable from any queue (the UIBC server checks who connects); no queue.sync,
+    // which could deadlock against teardown.
+    private let addressLock = NSLock()
+    private var _sinkAddress = ""
+    var sinkAddress: String { addressLock.withLock { _sinkAddress } }
 
     init(rtspPort: UInt16 = 7236, serverRTPPort: UInt16, prefs: StreamPreferences, queue: DispatchQueue) {
         self.rtspPort = rtspPort
@@ -173,6 +179,7 @@ final class WFDSession {
         connectTimeout?.cancel()
         connection = conn
         if case .hostPort(let host, _) = conn.endpoint { sinkIP = Self.ipString(host) }
+        addressLock.withLock { _sinkAddress = sinkIP }
         Log.info("RTSP", "Sink connected from \(sinkIP)")
 
         conn.stateUpdateHandler = { [weak self] s in
@@ -326,6 +333,9 @@ final class WFDSession {
                 Log.info("RTSP", "Sink requested an IDR frame")
                 onIDRRequest?()
             }
+            if let setting = params["wfd_uibc_setting"] {          // M15
+                onUIBCSetting?(setting.lowercased().hasPrefix("enable"))
+            }
 
         case "GET_PARAMETER":                    // sink-side keep-alive
             send(.ok(cseq: seq, extra: [("Session", sessionID)]))
@@ -363,15 +373,20 @@ final class WFDSession {
     private func maybeSendM3() {
         guard gotM1Reply, gotM2, !sentM3 else { return }
         sentM3 = true
-        let body = ([
-            "wfd_video_formats",
-            "wfd_audio_codecs",
-            "wfd_client_rtp_ports",
-            "wfd_content_protection",
-        ] + prefs.extraM3Parameters).joined(separator: "\r\n") + "\r\n"
+        sendM3(prefs.m3Parameters)
+    }
+
+    private func sendM3(_ names: [String]) {
+        let body = names.joined(separator: "\r\n") + "\r\n"
         sendRequest("GET_PARAMETER", name: "M3 (GET_PARAMETER)", body: body) { [weak self] resp in
             guard let self else { return }
             guard resp.statusCode == 200 else {
+                // A sink that chokes on parameters it doesn't know: ask only for the basics.
+                if names != StreamPreferences.basicM3Parameters {
+                    Log.warn("RTSP", "Sink rejected M3 (\(resp.statusCode ?? 0)); retrying with the basic parameters only")
+                    self.sendM3(StreamPreferences.basicM3Parameters)
+                    return
+                }
                 self.close(error: SessionError.rejected("M3 GET_PARAMETER", resp.statusCode ?? 0)); return
             }
             let caps = WFDSinkCapabilities.parse(resp.body ?? "")
@@ -384,18 +399,23 @@ final class WFDSession {
                 self.close(error: SessionError.rejected("M3: sink reported no RTP port", 200)); return
             }
             let n = WFDNegotiatedFormat.choose(sink: caps, prefs: self.prefs)
-            self.negotiated = n
-            Log.info("RTSP", "Chose \(n.resolution), H.264 \(n.isHighProfile ? "Constrained High" : "Constrained Baseline") level bit 0x\(String(n.levelBit, radix: 16)), audio: \(n.audio?.descriptor ?? "none")")
-            self.sendM4(n)
+            self.sendM4(n, fallbacks: WFDNegotiatedFormat.fallbacks(after: n, sink: caps, prefs: self.prefs))
         }
     }
 
-    private func sendM4(_ n: WFDNegotiatedFormat) {
+    private func sendM4(_ n: WFDNegotiatedFormat, fallbacks: [WFDNegotiatedFormat]) {
+        negotiated = n
+        Log.info("RTSP", "Chose \(n.summary), audio: \(n.audio?.descriptor ?? "none")\(n.uibc != nil ? ", input from the TV" : "")")
         let host = localIP.isEmpty ? "localhost" : localIP
         let url = "rtsp://\(host)/wfd1.0/streamid=0"
         sendRequest("SET_PARAMETER", name: "M4 (SET_PARAMETER)", body: n.m4Body(presentationURL: url)) { [weak self] resp in
             guard let self else { return }
             guard resp.statusCode == 200 else {
+                if let next = fallbacks.first {
+                    Log.warn("RTSP", "Sink rejected M4 (\(resp.statusCode ?? 0)) for \(n.summary); trying a simpler format")
+                    self.sendM4(next, fallbacks: Array(fallbacks.dropFirst()))
+                    return
+                }
                 self.close(error: SessionError.rejected("M4 SET_PARAMETER (format \(n.videoFormatsDescriptor))", resp.statusCode ?? 0)); return
             }
             self.sendM5Setup()
@@ -416,8 +436,9 @@ final class WFDSession {
     private func logCapabilities(_ caps: WFDSinkCapabilities) {
         if let v = caps.videoFormats {
             for c in v.codecs {
-                let res = WFDResolution.cea.filter { c.supports($0) }.map(\.description).joined(separator: " ")
-                Log.info("RTSP", String(format: "Sink H.264 profile 0x%02X level 0x%02X, CEA: %@", c.profile, c.level, res))
+                let res = WFDResolution.table(for: c.flavor).filter { c.supports($0) }.map(\.description).joined(separator: " ")
+                Log.info("RTSP", String(format: "Sink %@ (%@) profile 0x%02X level 0x%02X, CEA: %@",
+                                        c.codec.rawValue, c.flavor.rawValue, c.profile, c.level, res))
             }
             if let native = v.nativeResolution { Log.info("RTSP", "Sink native resolution: \(native)") }
         } else {
@@ -425,7 +446,8 @@ final class WFDSession {
         }
         Log.info("RTSP", "Sink audio: \(caps.audioCodecs.map(\.descriptor).joined(separator: ", ").nilIfEmpty ?? "none"); RTP port \(caps.rtpPort0)")
         // Anything beyond the basics (R2 codecs, vendor extensions) - useful for bring-up.
-        let known: Set<String> = ["wfd_video_formats", "wfd_audio_codecs", "wfd_client_rtp_ports", "wfd_content_protection"]
+        let known: Set<String> = ["wfd_video_formats", "wfd_audio_codecs", "wfd_client_rtp_ports", "wfd_content_protection",
+                                  "wfd2_video_formats", "wfdx_video_formats"]
         for (name, value) in caps.raw.sorted(by: { $0.key < $1.key }) where !known.contains(name) {
             Log.info("RTSP", "Sink \(name): \(value.count > 200 ? String(value.prefix(200)) + "..." : value)")
         }

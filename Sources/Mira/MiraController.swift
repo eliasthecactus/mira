@@ -41,6 +41,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         var muteMac = true
         var lowLatency = false
         var target: CaptureTarget = .screen
+        var remoteInput = false                      // UIBC: let the TV's keyboard/mouse/touch control the Mac
     }
 
     // auto = plain session (any compliant sink accepts it); if the display ignores it,
@@ -84,6 +85,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private var generation = 0
     private var currentSecurity: MICESecurity = .none
     private var extended: ExtendedDisplay?
+    private var uibc: UIBCServer?
     private var extendFailure: String?
     private static var extendUnavailable: String?      // remembered for the rest of the run
 
@@ -256,9 +258,21 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     }
 
     private func startSession(_ device: MiracastDevice, security: MICESecurity, gen: Int) {
+        var prefs = options.prefs
+        prefs.allowHEVC = prefs.allowHEVC && VideoEncoder.hevcAvailable
+        if options.remoteInput {
+            if !InputInjector.hasPermission && !options.testPattern { InputInjector.requestPermission() }
+            let server = UIBCServer()
+            prefs.uibcPort = server.start()
+            uibc = server
+        }
         let s = WFDSession(rtspPort: options.rtspPort, serverRTPPort: options.localRTPPort,
-                           prefs: options.prefs, queue: queue)
+                           prefs: prefs, queue: queue)
         session = s
+        if let server = uibc {
+            server.allowedHost = { [weak s] in s?.sinkAddress }
+            s.onUIBCSetting = { [weak server] on in server?.setEnabled(on) }
+        }
 
         s.onPlay = { [weak self] format, sinkIP, rtpPort, rtcpPort in
             guard let self, gen == self.generation else { return }
@@ -310,7 +324,11 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private func startPipeline(device: MiracastDevice, format: WFDNegotiatedFormat, sinkIP: String,
                                rtpPort: UInt16, rtcpPort: UInt16?, gen: Int) {
         // 4K needs about 2.5x the bits of 1080p for the same quality.
-        let maxBitrate = options.adaptiveBitrate && format.resolution.is4K ? options.prefs.bitrate * 5 / 2 : options.prefs.bitrate
+        var maxBitrate = options.adaptiveBitrate && format.resolution.is4K ? options.prefs.bitrate * 5 / 2 : options.prefs.bitrate
+        if let limit = format.maxBitrate, maxBitrate > limit {
+            Log.info("Mira", "Capping the bitrate at \(limit / 1_000_000) Mbit/s (HEVC level limit)")
+            maxBitrate = limit
+        }
         let cfg = MediaPipeline.Config(format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort,
                                        localRTPPort: options.localRTPPort, bitrate: maxBitrate,
                                        fps: format.resolution.fps, testPattern: options.testPattern,
@@ -332,13 +350,23 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             }
         }
         pipeline = p
+        if format.uibc != nil, let server = uibc {
+            server.isSuspended = { [weak p] in p?.inputSuspended ?? true }
+            server.activate(streamWidth: format.resolution.width, streamHeight: format.resolution.height) { [weak p] in
+                p?.inputRegion()
+            }
+        } else if let server = uibc {
+            Log.info("UIBC", "The display does not offer input back to the Mac")
+            server.stop()
+            uibc = nil
+        }
         Task {
             do {
                 try await p.start()
                 self.queue.async {
                     guard gen == self.generation else { return }
                     self.reconnectAttempts = 0
-                    self.status = .streaming(device, format.resolution.description)
+                    self.status = .streaming(device, format.resolution.description + (format.isHEVC ? " HEVC" : ""))
                 }
             } catch {
                 self.queue.async {
@@ -391,6 +419,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private func tearDownCurrent(reason: String) {
         generation += 1
         pipeline?.stop(); pipeline = nil
+        uibc?.stop(); uibc = nil
         session?.onClosed = nil
         session?.teardown(); session = nil
         mice?.onError = nil

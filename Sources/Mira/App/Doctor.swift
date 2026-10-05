@@ -26,6 +26,8 @@ enum Doctor {
         checkInterfaces()
         checkVPN()
         checkExtendMode()
+        checkCodecs()
+        checkRemoteInput()
         emit("""
 
         Local Network permission: if `Mira list` finds nothing although the adapter is on, make sure Mira is
@@ -46,6 +48,23 @@ enum Doctor {
         } else {
             warn("Screen Recording permission not granted to this process (the terminal app when run from a shell).",
                  fix: "System Settings -> Privacy & Security -> Screen & System Audio Recording -> enable your terminal, then restart it. `--test-pattern` works without it.")
+        }
+    }
+
+    private static func checkCodecs() {
+        if VideoEncoder.hevcAvailable {
+            ok("HEVC (H.265) encoder available - used for 4K on displays that support Miracast 2 HEVC")
+        } else {
+            emit("  [info] No HEVC encoder on this Mac; Mira uses H.264 (which every display supports)")
+        }
+    }
+
+    private static func checkRemoteInput() {
+        if InputInjector.hasPermission {
+            ok("Accessibility permission granted (needed for \"Allow TV input\" / --remote-input)")
+        } else {
+            emit("  [info] Accessibility permission not granted. Only needed for \"Allow TV input\" (--remote-input):\n"
+                 + "         System Settings -> Privacy & Security -> Accessibility -> enable Mira (or your terminal)")
         }
     }
 

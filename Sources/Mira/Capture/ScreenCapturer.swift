@@ -151,6 +151,26 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
 
     func currentFrame() -> CVPixelBuffer? { lock.withLock { latest } }
 
+    // The captured area in global display coordinates (points, top-left origin).
+    // For one window that is the window's current frame; otherwise the whole display
+    // (app sharing keeps the display's geometry, with other apps blacked out).
+    func contentRect() -> CGRect? {
+        switch target {
+        case .window(let id, _):
+            let now = ProcessInfo.processInfo.systemUptime
+            if let cached = windowRectCache, now - cached.time < 0.25 { return cached.rect }
+            guard let info = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]],
+                  let bounds = info.first?[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds) else { return nil }
+            windowRectCache = (now, rect)
+            return rect
+        case .screen, .app:
+            guard let display else { return nil }
+            return CGDisplayBounds(display.displayID)
+        }
+    }
+    private var windowRectCache: (time: TimeInterval, rect: CGRect)?
+
     enum CaptureError: LocalizedError {
         case permissionDenied(Error)
         case noDisplayFound

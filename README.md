@@ -104,7 +104,9 @@ mira help                            # all options
 | Share | Entire screen | or **one app** (all its windows; everything else, including notifications, stays black) or **one window** (even when covered). Switches live without reconnecting. `--app <name>`, `--window <title>`, list with `mira windows` |
 | Mirror / Extend | Mirror | **Extend** makes the TV a second screen instead of a copy (`--extend`), see below |
 | Display | main display | which screen to mirror: menu or `--display <n>` |
-| Resolution | Best | best of 1080p30 / 720p30 the display supports. **4K** (3840x2160) if the display offers it, else 1080p; needs ~30 Mbit/s of Wi-Fi (`--resolution 4k`) |
+| Resolution | Best | best of 1080p30 / 720p30 the display supports. **4K** (3840x2160) if the display offers it (Miracast 2 or Microsoft's extension), else 1080p; needs ~25 Mbit/s of Wi-Fi (`--resolution 4k`) |
+| Codec | Auto | H.264 up to 1080p (lowest delay, every display has it); **HEVC (H.265)** for 4K when the display supports it. `--codec h264` / `--codec hevc` to prefer one; Mira falls back to whatever the display can decode. HEVC needs a Mac from 2017 or later |
+| Allow TV input | off | a keyboard, mouse or touch screen at the TV controls the Mac (UIBC), see [Input from the TV](#input-from-the-tv) (`--remote-input`) |
 | 60 fps | off | smoother motion if the display supports 60 fps (`--fps 60`) |
 | Low latency | off | about 100 ms instead of 200 ms: smaller buffer, LPCM audio, low-latency encoder. Can stutter on weak Wi-Fi (`--low-latency`) |
 | Quality | Auto | adapts the bitrate to your Wi-Fi (backs off on packet loss or congestion, up to 12 Mbit/s); pick a number to fix it (`--bitrate 6`, `--max-bitrate 16`) |
@@ -125,6 +127,14 @@ mira help                            # all options
 In Extend mode Mira creates a virtual monitor the size of the stream, so macOS treats the TV as another screen: drag windows onto it, use it for presenter view. Arrange it in System Settings -> Displays like any monitor.
 
 macOS has no public API for virtual monitors. Mira uses the private CoreGraphics one that display utilities such as BetterDisplay and DeskPad use. Mira checks that the virtual display really switched on. If it didn't, Mira mirrors instead and says so (`Mira doctor` tells you up front). On the macOS 27 build used for development it doesn't switch on, so Extend mode has only been exercised up to that fallback.
+
+### Input from the TV
+
+Some receivers can send input back to the Mac: Windows' *Project to this PC* forwards the PC's keyboard, mouse and touch screen, and touch displays send taps. Mira supports both Wi-Fi Display input formats: *generic* events (touch, mouse, ASCII keys, scrolling) and *HID* reports (real USB/Bluetooth keyboards, mice and touch screens, including arrow and function keys and modifiers). Touch becomes a click or drag, the Windows key becomes Command.
+
+It is **off by default**: anyone at the TV can then use your Mac. Turn on *Allow TV input* (or `--remote-input`) and give Mira the Accessibility permission (System Settings -> Privacy & Security -> Accessibility); macOS silently drops the events without it, and `mira doctor` tells you. Input is ignored while the screen is paused, and accepted only from the display Mira is connected to. The display can switch input off at any time. Nothing you type is logged.
+
+Whether a display offers input at all depends on the display: the Microsoft 4K adapter probably doesn't (it has no input ports). The log says "The display does not offer input back to the Mac" in that case.
 
 ### Security
 
@@ -164,6 +174,8 @@ mira list                                                  # 2. adapter should b
 mira connect <ip> --test-pattern --no-audio --verbose      # 3. simplest stream
 mira connect <ip> --test-pattern --verbose                 # 4. + audio (beep each second)
 mira connect <ip>                                          # 5. real screen + audio
+mira connect <ip> --resolution 4k --probe-wfd2 --verbose   # 6. 4K / HEVC, logs everything the adapter offers
+mira connect <ip> --remote-input                           # 7. only if the display offers input back
 ```
 
 What success looks like at step 3:
@@ -172,7 +184,8 @@ What success looks like at step 3:
 [MICE] -> SOURCE_READY
 [RTSP] Sink connected from 192.168.1.42          <- the adapter connected back (firewall OK)
 [RTSP] <- 200 OK ... M1 / M3 / M4 / M5              <- capability negotiation
-[RTSP] Sink H.264 profile ..., CEA: ...              <- what the adapter supports
+[RTSP] Sink H.264 (wfd_video_formats) profile ..., CEA: ...   <- what the adapter supports
+[RTSP] Chose 1920x1080p30 H.264 Constrained Baseline ...       <- what Mira picked
 [RTSP] <- SETUP / PLAY
 [Mira] Mirroring to ... at 1920x1080p30
 ```
@@ -188,7 +201,8 @@ The TV should show colour bars with a moving white line and a running frame coun
 | `Sink did not connect back to the RTSP port within 15s` | **macOS firewall**, or the adapter wants PIN pairing | `Mira doctor`. Turn the firewall off briefly to test. Try `--security pin` |
 | `The display rejected the PIN` | typo, or the PIN changed | Reconnect and type the PIN currently on the TV |
 | `DTLS handshake ... failed` | the adapter's DTLS doesn't match Mira's | Send the log; use `--security off` meanwhile |
-| `Sink rejected M4 ...` | the chosen format was refused | `--resolution 720p`, then `--no-audio` |
+| `Sink rejected M4 ...` | the chosen format was refused (Mira already retried simpler ones) | `--legacy-formats`, `--resolution 720p`, then `--no-audio` |
+| 4K or HEVC: handshake OK but black screen | the adapter mis-advertises Miracast 2 | `--codec h264`, or `--legacy-formats`; send the log |
 | Handshake OK but black screen | the media stream isn't accepted | `--no-audio`, `--resolution 720p`, `--bitrate 4`. Check `--dump-ts out.ts` plays in `ffplay` |
 | Picture stutters or freezes | Wi-Fi throughput or jitter | Auto quality should back off by itself (look for `[Bitrate]` lines); otherwise `--bitrate 4`, `--delay 300`, move closer to the router |
 | Audio crackles or drops | audio arrives too late | `--delay 300`. Try `--audio-codec lpcm` |
@@ -217,7 +231,9 @@ python3 tools/mock_sink.py --play                      # interactive: watch the 
 .build/debug/Mira connect 127.0.0.1                    # ...in a second terminal
 python3 tools/mock_sink.py --advertise "Fake TV"       # appears in `Mira list` and the menu bar app
 python3 tools/mock_sink.py --loss 10                   # drop 10 % of packets, report it via RTCP -> watch Mira back off
-python3 tools/mock_sink.py --help                      # --no-audio, --no-m2, --video-formats, --idr-at, ...
+python3 tools/mock_sink.py --wfd2 hevc                 # a Miracast 2 display with HEVC (also --wfdx hevc, --wfd2 windows)
+python3 tools/mock_sink.py --uibc                      # offers input back and sends a few harmless events
+python3 tools/mock_sink.py --help                      # --no-audio, --no-m2, --strict-m3, --expect-codec, --idr-at, ...
 
 # Security modes need pyOpenSSL (a DTLS server):
 python3 -m venv .venv && .venv/bin/pip install pyopenssl cryptography
@@ -234,17 +250,18 @@ The mock sink is written from the same specs as Mira, so it can't catch a shared
 | Discovery | `Discovery/DeviceBrowser.swift` | DNS-SD `_display._tcp` with TXT `container_id`, resolved per interface (works with a VPN connected) |
 | MICE | `Session/MICEMessage.swift`, `MICEClient.swift` | SOURCE_READY / STOP_PROJECTION, SESSION_REQUEST / PIN challenge; friendly name is UTF-16LE with BOM, as Windows and GNOME send it |
 | Security | `Session/DTLSTunnel.swift` | Network.framework DTLS 1.2 client behind a loopback relay, so its records can travel inside MICE messages and RTP |
-| RTSP/WFD | `Session/WFDSession.swift`, `WFDNegotiation.swift` | Mac is the RTSP server; M1-M8, M16 keep-alive every 25 s, IDR requests, PAUSE/PLAY |
+| RTSP/WFD | `Session/WFDSession.swift`, `WFDNegotiation.swift` | Mac is the RTSP server; M1-M8, M15, M16 keep-alive every 25 s, IDR requests, PAUSE/PLAY. Formats from `wfd_video_formats` (Miracast 1), `wfd2_video_formats` (Miracast 2: H.264 + HEVC, 4K) and Microsoft's `wfdx_video_formats`; each has its own 4K table numbering. Falls back to simpler requests if a display rejects one |
 | Capture | `Capture/ScreenCapturer.swift` | ScreenCaptureKit video + system audio, letterboxed to 16:9 |
-| Video | `Encoder/H264Encoder.swift`, `H264Bitstream.swift` | VideoToolbox H.264 Baseline (CBP-flagged), no B-frames, IDR every 2 s or on request, AUD + SPS/PPS per keyframe |
+| Video | `Encoder/VideoEncoder.swift`, `H264Bitstream.swift`, `HEVCBitstream.swift` | VideoToolbox H.264 (Constrained Baseline / Constrained High, CAVLC as WFD requires) or HEVC Main, no B-frames, IDR every 2 s or on request, AUD + parameter sets per keyframe |
+| Input | `Input/UIBCServer.swift`, `UIBCProtocol.swift`, `HIDDescriptor.swift`, `UIBCTranslator.swift`, `InputInjector.swift` | UIBC TCP server, generic and HID input (HID report descriptor parser), mapped back through the capture's letterbox and posted as macOS events |
 | Audio | `Encoder/AACEncoder.swift`, `LPCMEncoder.swift` | AAC-LC 48 kHz stereo 128 kbit/s (ADTS), or WFD LPCM 16-bit big-endian |
-| Mux | `Mux/MPEGTSMuxer.swift` | WFD PIDs (PMT 0x100, video 0x1011, audio 0x1100), PCR on video, PAT/PMT every 100 ms |
+| Mux | `Mux/MPEGTSMuxer.swift` | WFD PIDs (PMT 0x100, video 0x1011, audio 0x1100), stream type 0x1B (H.264) or 0x24 (HEVC), PCR on video, PAT/PMT every 100 ms |
 | Transport | `RTP/RTPMP2TPacketizer.swift`, `RTPSender.swift` | RTP payload type 33, 7 TS packets per datagram |
 | Quality | `RTP/BitrateController.swift`, `RTCPSender.swift` | AIMD bitrate from RTCP receiver reports, send backlog and repeated keyframe requests |
 | System | `Util/SystemIntegration.swift`, `CVirtualDisplay/` | sleep prevention, speaker mute, virtual display, global shortcut |
 | Timing | `MediaPipeline.swift` | constant-rate frame pump (re-sends the last frame on a static screen), PTS = capture + buffer, PCR backstop on audio |
 
-References: [MS-MICE], Wi-Fi Display Technical Specification, Android's open-source Wi-Fi Display source (LPCM layout), ISO/IEC 13818-1 (MPEG-TS), RFC 2250 (MPEG-TS over RTP), and [GNOME Network Displays], an open-source MICE source that was invaluable for byte-level details.
+References: [MS-MICE], [MS-WFDPE] (Microsoft's Wi-Fi Display extensions), the Miracast (Wi-Fi Display) specification v2.3, Android's open-source Wi-Fi Display source (LPCM layout), ISO/IEC 13818-1 (MPEG-TS), RFC 2250 (MPEG-TS over RTP), and [GNOME Network Displays], an open-source MICE source that was invaluable for byte-level details.
 
 ## Releasing
 
@@ -256,15 +273,15 @@ References: [MS-MICE], Wi-Fi Display Technical Specification, Android's open-sou
 
 **Homebrew:** each release includes `mira.rb`. Put it in a tap repo (`eliasthecactus/homebrew-tap`, file `Casks/mira.rb`) and users can `brew install --cask eliasthecactus/tap/mira`.
 
-## Not implemented (yet)
+## Not implemented
 
-- **HEVC / Miracast 2 formats.** 4K works with H.264 when the display advertises it. HEVC needs the Wi-Fi Display R2 parameter syntax, which isn't public. `--probe-wfd2` asks the display for those capabilities and logs them, so a real-hardware log can fill the gap.
-- HDCP (only needed for DRM-protected video, which macOS won't screen-capture anyway)
-- UIBC (sending touch/keyboard input back from the TV)
+- **HDCP**, and it can't be. HDCP 2.x over Miracast needs a device key set and a certificate signed by Digital Content Protection LLC, plus the secret `lc128` constant, all of which are only issued to licensed companies, together with robustness rules that require hardware key protection. No open-source Miracast implementation has it. It also wouldn't help: HDCP only matters for DRM-protected video (Netflix and the like), and macOS never lets screen capture see that content anyway. Everything else mirrors normally, and the spec explicitly allows a source to stream without HDCP. Mira logs it when a display offers HDCP and carries on.
+- Miracast 2 extras that don't apply to screen mirroring: direct streaming of video files without re-encoding, 10-bit and 4:4:4 HEVC, TCP transport, auxiliary streams.
 - Notarized builds out of the box. Supported by the release workflow once Developer ID secrets are added.
 
 [MS-MICE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mice/940d808c-97f8-418e-a8a9-c471dc0d21bb
 [GNOME Network Displays]: https://gitlab.gnome.org/GNOME/gnome-network-displays
+[MS-WFDPE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wfdpe/
 
 ## License
 

@@ -16,12 +16,14 @@ final class MPEGTSMuxer {
     static let programNumber: UInt16 = 1
 
     static let streamTypeH264: UInt8 = 0x1B
+    static let streamTypeHEVC: UInt8 = 0x24   // Miracast R2 Table 105
     static let streamTypeAAC: UInt8  = 0x0F   // ADTS
     static let streamTypeLPCM: UInt8 = 0x83   // WFD LPCM in private_stream_1
 
     enum AudioFormat { case aac, lpcm }
 
     let audio: AudioFormat?
+    let videoStreamType: UInt8
     var hasAudio: Bool { audio != nil }
     private var continuity: [UInt16: UInt8] = [:]
     private var lastPSI: UInt64 = 0          // 90 kHz time PSI was last written
@@ -29,8 +31,9 @@ final class MPEGTSMuxer {
     private var lastPCR: UInt64?             // 27 MHz
     static let maxPCRGap: UInt64 = 27_000_000 / 25   // 40 ms (spec limit is 100 ms)
 
-    init(audio: AudioFormat?) {
+    init(audio: AudioFormat?, hevc: Bool = false) {
         self.audio = audio
+        self.videoStreamType = hevc ? Self.streamTypeHEVC : Self.streamTypeH264
     }
 
     // MARK: - Public API
@@ -221,7 +224,7 @@ final class MPEGTSMuxer {
 
     private func pmtSection() -> [UInt8] {
         var streams: [UInt8] = [
-            Self.streamTypeH264, 0xE0 | UInt8(Self.videoPID >> 8), UInt8(Self.videoPID & 0xFF), 0xF0, 0x00,
+            videoStreamType, 0xE0 | UInt8(Self.videoPID >> 8), UInt8(Self.videoPID & 0xFF), 0xF0, 0x00,
         ]
         switch audio {
         case .aac:

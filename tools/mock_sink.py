@@ -36,6 +36,22 @@ AUDIO_PROFILES = {
     "lpcm": "LPCM 00000002 00",
     "none": "none",
 }
+# Miracast R2 / Microsoft capability presets (--wfd2 / --wfdx).
+WFD2_PRESETS = {
+    # H.264 CBP up to 1080p60 (level 4.2) + H.265 Main up to 3840x2160p30 (level 5.1)
+    "hevc": "00 01 01 0010 0000000181ff 000000000000 000000000000 00 0000 0000 00, "
+            "02 01 0010 0000000f81ff 000000000000 000000000000 00 0000 0000 00 00",
+    # Windows 11's own sink (captured by lazycast): H.264 RHP2 + CBP, level 5.2, 4K
+    "windows": "40 01 04 0080 000001ffbdeb 000155557fff 000000000fff 10 0000 001f 11, "
+               "01 01 0080 000001ffbdeb 0001555557ff 000000000fff 10 0000 001f 11 00",
+}
+WFDX_PRESETS = {
+    # CBP + H.265 Main, level 5.1, 1080p30 + 3840x2160p30/p60 (Microsoft bit numbering)
+    "hevc": "0000 00 0005 0040 0000060080 0000000000 00000000 00 0000 0000 11 none none",
+}
+UIBC_CAPABILITY = ("input_category_list=GENERIC, HIDC;generic_cap_list=Mouse, SingleTouch, Keyboard;"
+                   "hidc_cap_list=Keyboard/USB, Mouse/USB;port=none")
+KNOWN_M3 = {"wfd_video_formats", "wfd_audio_codecs", "wfd_client_rtp_ports", "wfd_content_protection"}
 LPCM_HEADER = bytes([0xA0, 0x06, 0x00, 0x11])
 LPCM_PAYLOAD = 6 * 80 * 4
 
@@ -254,6 +270,7 @@ class MediaStats:
         self.decrypt_errors = 0
         self.encrypted_rtp = 0
         self.lossy = False
+        self.video_stream_type = None
 
     def rtp(self, data):
         now = time.monotonic()
@@ -318,6 +335,15 @@ class MediaStats:
             self.pat += 1
         elif pid == PMT_PID:
             self.pmt += 1
+            sec = payload[1 + payload[0]:]
+            if len(sec) > 12:
+                section_len = ((sec[1] & 0x0F) << 8) | sec[2]
+                i = 12 + (((sec[10] & 0x0F) << 8) | sec[11])
+                while i + 5 <= 3 + section_len - 4:
+                    stype, epid = sec[i], ((sec[i + 1] & 0x1F) << 8) | sec[i + 2]
+                    if epid == VIDEO_PID:
+                        self.video_stream_type = stype
+                    i += 5 + (((sec[i + 3] & 0x0F) << 8) | sec[i + 4])
         elif pid in self.pes and payload[:3] == b"\x00\x00\x01" and payload[7] & 0x80:
             self.pes[pid] += 1
             if pid == AUDIO_PID:
@@ -422,6 +448,8 @@ class MockSink:
         self.mice_writer = None
         self.dtls = None
         self.session_options = 0
+        self.m4_codec = None
+        self.uibc_port = None
         self.pin = None
         self.pin_ok = False
         self.source_ip = None
@@ -478,6 +506,14 @@ class MockSink:
         elapsed = time.monotonic() - (self.stats.first_packet or time.monotonic())
         self.stats.report(elapsed)
         errs = self.stats.errors()
+        st = self.stats.video_stream_type
+        if st is not None:
+            log("Media", f"PMT video stream_type 0x{st:02x} ({ {0x1b: 'H.264', 0x24: 'HEVC'}.get(st, '?') })")
+        m4_codec = getattr(self, "m4_codec", None)
+        if m4_codec and st is not None and st != {"h264": 0x1B, "hevc": 0x24}[m4_codec]:
+            errs.append(f"M4 negotiated {m4_codec} but the PMT says stream_type 0x{st:02x}")
+        if self.a.expect_codec and m4_codec != self.a.expect_codec:
+            errs.append(f"expected {self.a.expect_codec}, negotiated {m4_codec}")
         for e in errs:
             log("FAIL", e)
         if self.ok and not errs:
@@ -660,22 +696,60 @@ class MockSink:
             m3 = await c.read()
             assert m3["start"].startswith("GET_PARAMETER"), "expected M3 GET_PARAMETER"
             req = [l.strip() for l in m3["body"].splitlines() if l.strip()]
+            if self.a.strict_m3 and set(req) - KNOWN_M3:
+                # Like an old sink that rejects parameters it doesn't know.
+                log("Sink", f"Strict M3: rejecting unknown {sorted(set(req) - KNOWN_M3)}")
+                c.reply(m3, code="303 See Other")
+                m3 = await c.read()
+                assert m3["start"].startswith("GET_PARAMETER"), "expected M3 retry"
+                req = [l.strip() for l in m3["body"].splitlines() if l.strip()]
+                assert not set(req) - KNOWN_M3, "M3 retry still asks for unknown parameters"
+            audio = AUDIO_PROFILES["none" if self.a.no_audio else self.a.audio]
             caps = {
                 "wfd_video_formats": self.a.video_formats,
-                "wfd_audio_codecs": AUDIO_PROFILES["none" if self.a.no_audio else self.a.audio],
+                "wfd_audio_codecs": audio,
                 "wfd_client_rtp_ports": f"RTP/AVP/UDP;unicast {self.a.rtp_port} 0 mode=play",
                 "wfd_content_protection": "none",
             }
+            if self.a.wfd2:
+                caps["wfd2_video_formats"] = WFD2_PRESETS.get(self.a.wfd2, self.a.wfd2)
+                caps["wfd2_audio_codecs"] = audio
+            if self.a.wfdx:
+                caps["wfdx_video_formats"] = WFDX_PRESETS.get(self.a.wfdx, self.a.wfdx)
+            if self.a.uibc:
+                caps["wfd_uibc_capability"] = UIBC_CAPABILITY
             body = "".join(f"{k}: {caps[k]}\r\n" for k in req if k in caps)
             c.reply(m3, body=body)
             # M4
             m4 = await c.read()
             assert m4["start"].startswith("SET_PARAMETER"), "expected M4 SET_PARAMETER"
             p = params(m4["body"])
-            for k in ("wfd_video_formats", "wfd_presentation_url", "wfd_client_rtp_ports"):
+            for k in ("wfd_presentation_url", "wfd_client_rtp_ports"):
                 assert k in p, f"M4 lacks {k}"
-            log("Sink", f"M4 video: {p['wfd_video_formats']}")
-            log("Sink", f"M4 audio: {p.get('wfd_audio_codecs', '(none)')}")
+            video_keys = [k for k in ("wfd_video_formats", "wfd2_video_formats", "wfdx_video_formats") if k in p]
+            assert len(video_keys) == 1, f"M4 must carry exactly one video format parameter, has {video_keys}"
+            vkey = video_keys[0]
+            if self.a.wfd2 and "wfd2_video_formats" in req:
+                # Miracast 6.4.4: an R2 M4 uses only the wfd2 parameters.
+                assert vkey == "wfd2_video_formats", f"R2 sink but M4 uses {vkey}"
+                assert "wfd_audio_codecs" not in p, "R2 M4 must use wfd2_audio_codecs"
+            elif self.a.wfdx and "wfdx_video_formats" in req:
+                assert vkey == "wfdx_video_formats", f"wfdx sink but M4 uses {vkey}"
+            fields = p[vkey].split()
+            if vkey == "wfd2_video_formats":
+                self.m4_codec = "hevc" if fields[1] == "02" else "h264"
+            elif vkey == "wfdx_video_formats":
+                self.m4_codec = "hevc" if int(fields[2], 16) & 0x4 else "h264"
+            else:
+                self.m4_codec = "h264"
+            self.uibc_port = None
+            if "wfd_uibc_capability" in p:
+                m = re.search(r"port=(\d+)", p["wfd_uibc_capability"])
+                assert m, "M4 wfd_uibc_capability without a port"
+                self.uibc_port = int(m.group(1))
+                log("Sink", f"M4 UIBC: {p['wfd_uibc_capability']} ({p.get('wfd_uibc_setting', 'no setting')})")
+            log("Sink", f"M4 video ({vkey}, {self.m4_codec}): {p[vkey]}")
+            log("Sink", f"M4 audio: {p.get('wfd_audio_codecs', p.get('wfd2_audio_codecs', '(none)'))}")
             assert str(self.a.rtp_port) in p["wfd_client_rtp_ports"], "M4 changed our RTP port"
             url = p["wfd_presentation_url"].split()[0]
             c.reply(m4)
@@ -703,6 +777,12 @@ class MockSink:
                 asyncio.create_task(self.idr_later(c, session))
             if self.a.duration:
                 asyncio.create_task(self.teardown_later(c, session))
+            if self.a.uibc:
+                if self.uibc_port:
+                    asyncio.create_task(self.uibc_client(c, host, session))
+                else:
+                    log("FAIL", "advertised UIBC but the source did not enable it in M4")
+                    self.ok = False
 
             while True:
                 m = await c.read()
@@ -736,6 +816,42 @@ class MockSink:
             log("FAIL", "no keyframe within 500 ms of wfd_idr_request")
             self.ok = False
 
+    async def uibc_client(self, c, host, session):
+        # Sends harmless input only (nothing moves or types on the Mac running the test):
+        # a HID mouse descriptor, a no-op mouse report and a GENERIC rotate.
+        await asyncio.sleep(1)
+        try:
+            _, w = await asyncio.wait_for(asyncio.open_connection(host, self.uibc_port), 3)
+        except Exception as e:
+            log("FAIL", f"Cannot connect to the source's UIBC port {self.uibc_port}: {e}")
+            self.ok = False
+            return
+        def frame(category, body, ts=None):
+            header = 4 if ts is None else 6
+            if (header + len(body)) % 2:
+                body += b"\x00"
+            total = header + len(body)
+            out = bytes([0x10 if ts is not None else 0x00, category, total >> 8, total & 0xFF])
+            if ts is not None:
+                out += struct.pack(">H", ts)
+            return out + body
+        desc = bytes([0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x28, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09,
+                      0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02,
+                      0x95, 0x01, 0x75, 0x05, 0x81, 0x03, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38,
+                      0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06, 0xC0, 0xC0])
+        data = frame(1, bytes([1, 1, 1]) + struct.pack(">H", len(desc)) + desc, ts=0x2AB6)
+        data += frame(1, bytes([1, 1, 0, 0, 5, 0x28, 0, 0, 0, 0]))
+        data += frame(0, bytes([8, 0, 2, 0, 64]))
+        # Deliver in awkward pieces to exercise reassembly.
+        for i in range(0, len(data), 7):
+            w.write(data[i:i + 7])
+            await w.drain()
+            await asyncio.sleep(0.01)
+        log("Sink", f"UIBC: sent 3 input messages to port {self.uibc_port}")
+        await asyncio.sleep(1)
+        c.request("SET_PARAMETER", "rtsp://localhost/wfd1.0", [("Session", session)], "wfd_uibc_setting: disable\r\n")
+        log("Sink", "UIBC: sent M15 wfd_uibc_setting: disable")
+
     async def teardown_later(self, c, session):
         await asyncio.sleep(self.a.duration)
         log("Sink", f"{self.a.duration}s elapsed - sending TEARDOWN")
@@ -759,6 +875,11 @@ def main():
     ap.add_argument("--no-audio", action="store_true", help="same as --audio none")
     ap.add_argument("--no-m2", action="store_true", help="don't send M2 OPTIONS (some sinks skip it)")
     ap.add_argument("--video-formats", default=DEFAULT_VIDEO_FORMATS, help="wfd_video_formats value to advertise")
+    ap.add_argument("--wfd2", metavar="FORMATS", help="also advertise wfd2_video_formats (preset: hevc, windows; or a raw value)")
+    ap.add_argument("--wfdx", metavar="FORMATS", help="also advertise wfdx_video_formats (preset: hevc; or a raw value)")
+    ap.add_argument("--expect-codec", choices=["h264", "hevc"], help="fail unless this codec is negotiated and sent")
+    ap.add_argument("--strict-m3", action="store_true", help="reject an M3 that asks for non-R1 parameters (old sinks)")
+    ap.add_argument("--uibc", action="store_true", help="offer UIBC and send a few harmless input messages")
     ap.add_argument("--advertise", metavar="NAME", help="register NAME as _display._tcp via dns-sd")
     ap.add_argument("--security", choices=["none", "encrypted", "pin"], default="none",
                     help="require MS-MICE security: plain SOURCE_READY is ignored until it's satisfied")

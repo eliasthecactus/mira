@@ -27,6 +27,9 @@ enum CLI {
       --no-audio              Video only
       --audio-codec <c>       auto (default: AAC, else LPCM) | aac | lpcm
       --resolution <r>        auto (default, up to 1080p) | 4k | 1080p | 720p
+      --codec <c>             auto (default: H.264, HEVC for 4K if the display has it) | h264 | hevc
+      --legacy-formats        Negotiate like a Miracast 1 source (H.264 only) for displays that misbehave
+      --remote-input          Let the TV's keyboard/mouse/touch control this Mac (UIBC; needs Accessibility)
       --low-latency           Smaller buffer + LPCM audio + low-latency encoder (~100 ms less delay)
       --fps <n>               30 (default) or 60 (only if the sink supports it)
       --bitrate <mbps|auto>   auto (default): adapts to the Wi-Fi, up to --max-bitrate; a number = fixed
@@ -42,7 +45,7 @@ enum CLI {
       --rtp-port <n>          Local UDP source port for RTP (default 19000)
       --dump-ts <file.ts>     Also save the exact MPEG-TS stream sent (play with ffplay)
       --no-reconnect          Exit instead of retrying when a working session drops
-      --probe-wfd2            Also ask the display for Miracast 2 / vendor capabilities (logged; for diagnostics)
+      --probe-wfd2            Also ask the display for more Miracast 2 / vendor capabilities (logged)
       --verbose               Print full RTSP/MICE messages
 
     Log file: \(Log.logFileURL.path)
@@ -236,6 +239,14 @@ enum CLI {
                 maxBitrate = Int(mbps * 1_000_000)
             case "--extend": opts.extendDisplay = true
             case "--probe-wfd2": opts.prefs.extraM3Parameters = StreamPreferences.wfd2ProbeParameters
+            case "--codec":
+                let v = try value(a).lowercased()
+                guard let c = WFDNegotiatedFormat.CodecChoice(rawValue: v == "h265" ? "hevc" : v == "avc" ? "h264" : v) else {
+                    throw ParseError(description: "--codec must be auto, h264 or hevc")
+                }
+                opts.prefs.codec = c
+            case "--legacy-formats": opts.prefs.legacyFormats = true
+            case "--remote-input", "--uibc": opts.remoteInput = true
             case "--low-latency":
                 opts.lowLatency = true
                 opts.prefs.lowLatency = true

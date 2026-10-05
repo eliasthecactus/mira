@@ -48,8 +48,19 @@ jobs:
           E2E_PRIVACY=1 E2E_OUT="$RUNNER_TEMP/e2e-privacy" E2E_DURATION=8 tools/e2e.sh $T
           MIRA_ARGS="--test-pattern --low-latency" E2E_OUT="$RUNNER_TEMP/e2e-lowlat" E2E_DURATION=5 \
             tools/e2e.sh --timing-tolerance-ms=250
-          MIRA_ARGS="--test-pattern --resolution 4k" E2E_OUT="$RUNNER_TEMP/e2e-4k" E2E_DURATION=5 tools/e2e.sh --timing-tolerance-ms=400 \
-            "--video-formats=00 00 01 10 000001ff 00000000 00000000 00 0000 0000 00 none none, 02 40 000fffff 00000000 00000000 00 0000 0000 00 none none"
+          # 4K over Miracast R2 (Windows' own sink capabilities: H.264 up to level 5.2)
+          MIRA_ARGS="--test-pattern --resolution 4k" E2E_EXPECT_LOG="Chose 3840x2160p30" E2E_OUT="$RUNNER_TEMP/e2e-4k" \
+            E2E_DURATION=5 tools/e2e.sh --timing-tolerance-ms=400 --wfd2 windows
+          # HEVC via wfd2 (only if this machine can encode HEVC; otherwise Mira must fall back to H.264)
+          if .build/debug/Mira doctor | grep -q "HEVC (H.265) encoder available"; then EXPECT="--expect-codec hevc"; else EXPECT="--expect-codec h264"; fi
+          MIRA_ARGS="--test-pattern --codec hevc" E2E_OUT="$RUNNER_TEMP/e2e-hevc" E2E_DURATION=5 \
+            tools/e2e.sh $T --wfd2 hevc $EXPECT
+          # A sink that rejects unknown M3 parameters: Mira retries with the R1 basics
+          E2E_EXPECT_LOG="retrying with the basic parameters" E2E_OUT="$RUNNER_TEMP/e2e-strict" E2E_DURATION=4 \
+            tools/e2e.sh $T --strict-m3 --wfd2 hevc
+          # UIBC: the sink connects to Mira's input port, sends input, then disables it (M15)
+          MIRA_ARGS="--test-pattern --remote-input" E2E_EXPECT_LOG="Received 3 input events" E2E_OUT="$RUNNER_TEMP/e2e-uibc" \
+            E2E_DURATION=5 tools/e2e.sh $T --uibc
 
       - name: Package (ad-hoc signed)
         run: scripts/package.sh

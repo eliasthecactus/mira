@@ -2,6 +2,24 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.5]
+
+### Added
+- **Miracast 2 / HEVC:** Mira now reads the display's `wfd2_video_formats` (Miracast R2) and Microsoft's `wfdx_video_formats` and can stream **HEVC (H.265) Main**, used automatically for 4K when the display supports it (`--codec auto|h264|hevc`, *Codec* in the menu). MPEG-TS stream type 0x24, VPS/SPS/PPS on every keyframe, bitrate kept within the negotiated HEVC level. Macs without an HEVC encoder stay on H.264.
+- **Input from the TV (UIBC):** a keyboard, mouse or touch screen at the receiver can control the Mac. Generic and HID input (with a HID report descriptor parser), mapped back through the letterbox, posted as macOS events. Off by default; needs the Accessibility permission. `--remote-input`, *Allow TV input* in the menu.
+- `--legacy-formats` negotiates like a Miracast 1 source, for displays that misbehave.
+- `mira doctor` reports HEVC encoder support and the Accessibility permission.
+- Mock sink: `--wfd2`, `--wfdx`, `--expect-codec`, `--strict-m3` and `--uibc`; CI runs 4K over R2, HEVC, a strict sink and UIBC end to end.
+
+### Fixed
+- 4K was advertised through bits 17-21 of the Miracast 1 resolution table, which are reserved there. Real displays offer 4K only through `wfd2_video_formats` / `wfdx_video_formats` (each with its own numbering), which Mira now uses. An R2 display gets a pure R2 request (`wfd2_*` parameters only), as the spec requires.
+- Constrained High used CABAC, which Wi-Fi Display forbids for that profile; it now uses CAVLC (CABAC only with the R2 "Restricted High 2" profile).
+- If a display rejects the extended capability request or the chosen format, Mira retries with the Miracast 1 basics instead of failing.
+- HEVC fell behind real time at 4K because VideoToolbox's HEVC encoder struggles with large absolute timestamps; the encoder now gets session-relative ones.
+
+### Not possible
+- HDCP needs keys that are only issued to licensed hardware makers, and DRM-protected video can't be screen-captured on macOS anyway. See the README.
+
 ## [0.2.0-beta.4]
 
 ### Fixed

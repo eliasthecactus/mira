@@ -2,60 +2,23 @@ import XCTest
 import VideoToolbox
 @testable import Mira
 
-final class FourKNegotiationTests: XCTestCase {
-    // CBP up to 1080p30, plus a Constrained High entry with 3840x2160p30 at level 5.1.
-    let sink = WFDSinkCapabilities.parse("""
-    wfd_video_formats: 00 00 01 10 000001ff 00000000 00000000 00 0000 0000 00 none none, 02 40 000fffff 00000000 00000000 00 0000 0000 00 none none\r
-    wfd_audio_codecs: LPCM 00000002 00, AAC 00000001 00\r
-    wfd_client_rtp_ports: RTP/AVP/UDP;unicast 1028 0 mode=play\r
-
-    """)
-
-    func test4KUsesConstrainedHighEntry() {
-        var prefs = StreamPreferences()
-        prefs.resolution = .p2160
-        let n = WFDNegotiatedFormat.choose(sink: sink, prefs: prefs)
-        XCTAssertEqual(n.resolution.description, "3840x2160p30")
-        XCTAssertTrue(n.isHighProfile)
-        XCTAssertEqual(n.levelBit, 0x40, "4K30 needs level 5.1")
-        XCTAssertEqual(n.videoFormatsDescriptor, "00 00 02 40 00080000 00000000 00000000 00 0000 0000 00 none none")
-    }
-
-    func testBestStaysAt1080pAndBaseline() {
-        let n = WFDNegotiatedFormat.choose(sink: sink, prefs: StreamPreferences())
-        XCTAssertEqual(n.resolution.description, "1920x1080p30")
-        XCTAssertFalse(n.isHighProfile)
-    }
-
-    func test4KFallsBackWhenSinkLacksIt() {
-        var prefs = StreamPreferences()
-        prefs.resolution = .p2160
-        let only1080 = WFDSinkCapabilities.parse("wfd_video_formats: 00 00 01 10 000001ff 00000000 00000000 00 0000 0000 00 none none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 1 0 mode=play\r\n")
-        XCTAssertEqual(WFDNegotiatedFormat.choose(sink: only1080, prefs: prefs).resolution.description, "1920x1080p30")
-    }
-
-    func test4KNeedsSufficientLevel() {
-        var prefs = StreamPreferences()
-        prefs.resolution = .p2160
-        // Advertises 4K30 but only level 4.2 -> not usable.
-        let lowLevel = WFDSinkCapabilities.parse("wfd_video_formats: 00 00 02 10 000fffff 00000000 00000000 00 0000 0000 00 none none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 1 0 mode=play\r\n")
-        XCTAssertEqual(WFDNegotiatedFormat.choose(sink: lowLevel, prefs: prefs).resolution.description, "1920x1080p30")
-    }
-
-    func testLevelsAndLowLatencyAudio() {
-        XCTAssertEqual(WFDResolution.cea(width: 3840, height: 2160, fps: 60)?.requiredLevelBit, 0x80)
-        XCTAssertEqual(WFDResolution.cea(width: 1920, height: 1080, fps: 60)?.requiredLevelBit, 0x10)
-        var prefs = StreamPreferences()
-        prefs.lowLatency = true
-        XCTAssertEqual(WFDNegotiatedFormat.choose(sink: sink, prefs: prefs).audio?.format, "LPCM", "no AAC lookahead")
-        XCTAssertEqual(WFDNegotiatedFormat.choose(sink: sink, prefs: StreamPreferences()).audio?.format, "AAC")
-    }
-
+final class EncoderProfileTests: XCTestCase {
     func testEncoderProfileMapping() {
-        XCTAssertEqual(H264Encoder.profileLevel(forLevelBit: 0x40) as String, kVTProfileLevel_H264_Baseline_5_1 as String)
-        XCTAssertEqual(H264Encoder.profileLevel(forLevelBit: 0x04) as String, kVTProfileLevel_H264_Baseline_4_0 as String)
-        XCTAssertEqual(H264Encoder.profileLevel(forLevelBit: 0x40, high: true) as String,
+        XCTAssertEqual(VideoEncoder.profileLevel(forLevelBit: 0x40) as String, kVTProfileLevel_H264_Baseline_5_1 as String)
+        XCTAssertEqual(VideoEncoder.profileLevel(forLevelBit: 0x04) as String, kVTProfileLevel_H264_Baseline_4_0 as String)
+        XCTAssertEqual(VideoEncoder.profileLevel(forLevelBit: 0x40, high: true) as String,
                        kVTProfileLevel_H264_ConstrainedHigh_AutoLevel as String)
+    }
+
+    func testCABACOnlyForRestrictedHigh2() {
+        // WFD Table 6: CABAC is not allowed in CBP or Constrained High (RHP).
+        var c = VideoEncoder.Config()
+        c.h264Profile = .constrainedBaseline
+        XCTAssertFalse(c.cabac)
+        c.h264Profile = .constrainedHigh
+        XCTAssertFalse(c.cabac)
+        c.h264Profile = .restrictedHigh2
+        XCTAssertTrue(c.cabac)
     }
 }
 

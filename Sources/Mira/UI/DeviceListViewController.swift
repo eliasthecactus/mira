@@ -25,6 +25,8 @@ final class DeviceListViewController: NSViewController {
     private let privacyButton = NSButton(title: "Pause Screen", target: nil, action: nil)
     private let lowLatencyCheckbox = NSButton(checkboxWithTitle: "Low latency", target: nil, action: nil)
     private let fpsCheckbox = NSButton(checkboxWithTitle: "60 fps", target: nil, action: nil)
+    private let remoteInputCheckbox = NSButton(checkboxWithTitle: "Allow TV input", target: nil, action: nil)
+    private let codecPopup = NSPopUpButton()
     private let ipField = NSTextField()
     private let ipButton = NSButton(title: "Connect", target: nil, action: nil)
     private let displayPopup = NSPopUpButton()
@@ -46,6 +48,7 @@ final class DeviceListViewController: NSViewController {
     private static let bitrates = [0, 3, 4, 6, 8, 12, 16]       // 0 = Auto
     private static let securities: [MiraController.SecurityChoice] = [.auto, .off, .encrypted, .pin]
     private static let resolutions: [StreamPreferences.ResolutionChoice] = [.auto, .p2160, .p1080, .p720]
+    private static let codecs: [WFDNegotiatedFormat.CodecChoice] = [.auto, .h264, .hevc]
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 460))
@@ -103,7 +106,7 @@ final class DeviceListViewController: NSViewController {
         ipRow.spacing = 6
 
         // Settings (apply to the next connection)
-        for popup in [displayPopup, resolutionPopup, bitratePopup, modePopup, securityPopup] {
+        for popup in [displayPopup, resolutionPopup, bitratePopup, modePopup, securityPopup, codecPopup] {
             popup.controlSize = .small
             popup.font = .systemFont(ofSize: 11)
             popup.target = self
@@ -131,10 +134,16 @@ final class DeviceListViewController: NSViewController {
         lowLatencyCheckbox.state = Settings.lowLatency ? .on : .off
         lowLatencyCheckbox.action = #selector(settingsChanged)
         lowLatencyCheckbox.toolTip = "Halves the delay (about 100 ms instead of 200 ms) - prefers LPCM audio and a smaller buffer; may stutter on weak Wi-Fi"
+        codecPopup.addItems(withTitles: ["Codec: Auto", "Codec: H.264", "Codec: HEVC"])
+        codecPopup.selectItem(at: Self.codecs.firstIndex(of: Settings.codec) ?? 0)
+        codecPopup.toolTip = "Auto uses H.264 up to 1080p and HEVC (H.265) for 4K when the display supports it. Falls back to H.264 if the display has no HEVC"
+        remoteInputCheckbox.state = Settings.remoteInput ? .on : .off
+        remoteInputCheckbox.action = #selector(settingsChanged)
+        remoteInputCheckbox.toolTip = "Let a keyboard, mouse or touch screen at the TV control this Mac (UIBC, if the display supports it). Needs the Accessibility permission. Anyone at the TV can then use your Mac"
         fpsCheckbox.state = Settings.fps == 60 ? .on : .off
         fpsCheckbox.action = #selector(settingsChanged)
         fpsCheckbox.toolTip = "Smoother motion if the display supports 60 fps (uses more bandwidth)"
-        for box in [audioCheckbox, testPatternCheckbox, loginCheckbox, muteCheckbox, reconnectCheckbox, lowLatencyCheckbox, fpsCheckbox] {
+        for box in [audioCheckbox, testPatternCheckbox, loginCheckbox, muteCheckbox, reconnectCheckbox, lowLatencyCheckbox, fpsCheckbox, remoteInputCheckbox] {
             box.controlSize = .small
             box.font = .systemFont(ofSize: 11)
             box.target = self
@@ -165,6 +174,8 @@ final class DeviceListViewController: NSViewController {
         row4.spacing = 10
         let row5 = NSStackView(views: [reconnectCheckbox, loginCheckbox])
         row5.spacing = 10
+        let row6 = NSStackView(views: [codecPopup, remoteInputCheckbox])
+        row6.spacing = 10
 
         updateButton.bezelStyle = .inline
         updateButton.controlSize = .small
@@ -184,7 +195,7 @@ final class DeviceListViewController: NSViewController {
         let shortcutRow = NSStackView(views: [shortcut])
 
         let stack = NSStackView(views: [titleRow, statusLabel, scrollView, controlRow, ipRow,
-                                        settingsTitle, targetPopup, displayPopup, row2, row3, row4, row5, updateButton, shortcutRow, footer])
+                                        settingsTitle, targetPopup, displayPopup, row2, row3, row4, row6, row5, updateButton, shortcutRow, footer])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -406,6 +417,11 @@ final class DeviceListViewController: NSViewController {
         Settings.reconnectOnLaunch = reconnectCheckbox.state == .on
         Settings.lowLatency = lowLatencyCheckbox.state == .on
         Settings.fps = fpsCheckbox.state == .on ? 60 : 30
+        Settings.codec = Self.codecs[max(0, codecPopup.indexOfSelectedItem)]
+        if remoteInputCheckbox.state == .on, !Settings.remoteInput, !InputInjector.hasPermission {
+            InputInjector.requestPermission()    // shows the Accessibility prompt
+        }
+        Settings.remoteInput = remoteInputCheckbox.state == .on
         Settings.audio = audioCheckbox.state == .on
         Settings.testPattern = testPatternCheckbox.state == .on
         let i = displayPopup.indexOfSelectedItem
