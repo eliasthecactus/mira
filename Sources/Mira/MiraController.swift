@@ -87,6 +87,9 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private var extended: ExtendedDisplay?
     private var uibc: UIBCServer?
     private var cast: CastSession?
+    private let ssdp = SSDPDiscovery()
+    private var renderers: [String: DLNARenderer] = [:]      // by UDN
+    private var dlna: (renderer: DLNARenderer, monitor: DispatchSourceTimer)?
     private var extendFailure: String?
     private static var extendUnavailable: String?      // remembered for the rest of the run
 
@@ -133,9 +136,25 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             }
             browser.start()
         }
+        ssdp.onFound = { [weak self] device, renderer in
+            guard let self else { return }
+            self.queue.async {
+                self.renderers[renderer.udn] = renderer
+                self.devices.removeAll { $0.kind == .dlna && $0.serviceName == device.serviceName }
+                // A TV that also speaks Google Cast or Miracast is better served that way.
+                guard !self.devices.contains(where: { $0.ipAddress == device.ipAddress }) else { return }
+                self.devices.append(device)
+                self.devices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                self.onDevicesChanged?(self.devices)
+            }
+        }
+        ssdp.start()
     }
 
-    func stopDiscovery() { browsers.forEach { $0.stop() } }
+    func stopDiscovery() {
+        browsers.forEach { $0.stop() }
+        ssdp.stop()
+    }
 
     // MARK: - Projection
 
@@ -264,6 +283,10 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private func startSession(_ device: MiracastDevice, security: MICESecurity, gen: Int) {
         if device.kind == .googleCast {
             startCastSession(device, gen: gen)
+            return
+        }
+        if device.kind == .dlna {
+            startDLNASession(device, gen: gen)
             return
         }
         var prefs = options.prefs
@@ -395,6 +418,111 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         }
     }
 
+    // MARK: - DLNA (TV media player)
+
+    private func startDLNASession(_ device: MiracastDevice, gen: Int) {
+        let found: (DLNARenderer?) -> Void = { [weak self] renderer in
+            guard let self else { return }
+            self.queue.async {
+                guard gen == self.generation else { return }
+                guard let renderer else {
+                    self.sessionEnded(device: device, error: DLNAError.notARenderer(device.ipAddress))
+                    return
+                }
+                self.renderers[renderer.udn] = renderer
+                self.playOnRenderer(renderer, device: device, gen: gen)
+            }
+        }
+        if let known = renderers.values.first(where: { $0.udn == device.serviceName || $0.location == device.location }) {
+            found(known)
+        } else if let location = device.location {
+            URLSession.shared.dataTask(with: URLRequest(url: location, timeoutInterval: 5)) { data, _, _ in
+                found(data.flatMap { DLNARenderer.parse($0, location: location) })
+            }.resume()
+        } else {
+            // Connect by IP: ask the network which renderer lives there.
+            Log.info("DLNA", "Looking for a DLNA renderer at \(device.ipAddress)...")
+            ssdp.start()
+            queue.asyncAfter(deadline: .now() + 4) { [weak self] in
+                found(self?.ssdp.renderer(for: device.ipAddress))
+            }
+        }
+    }
+
+    private func playOnRenderer(_ renderer: DLNARenderer, device: MiracastDevice, gen: Int) {
+        let prefs = options.prefs
+        let size = prefs.resolution == .p720 ? (1280, 720) : (1920, 1080)
+        let transport = HTTPStreamTransport(audio: prefs.audio ? .aac : nil, ptsDelay: 0.3)
+        do { try transport.start() } catch { sessionEnded(device: device, error: error); return }
+        guard let host = DeviceProbe.localAddress(toward: device.ipAddress) else {
+            sessionEnded(device: device, error: DLNAError.noRoute(device.ipAddress))
+            return
+        }
+        let url = URL(string: "http://\(host):\(transport.port)\(HTTPStreamTransport.path)")!
+        let stream = StreamFormat(width: size.0, height: size.1, fps: 30, codec: .h264,
+                                  h264Profile: .restrictedHigh2, h264LevelBit: 0x10,
+                                  audio: prefs.audio ? .aac : nil)
+        // TVs buffer a few seconds anyway; frequent key frames let them start quickly.
+        runPipeline(device: device, stream: stream, transport: transport, bitrate: min(prefs.bitrate, 10_000_000),
+                    keyframeInterval: 1, inputBackChannel: false, gen: gen)
+        Log.info("DLNA", "Asking \(renderer.friendlyName) to play \(url.absoluteString)")
+        renderer.play(url: url, title: "Mira - \(options.friendlyName)") { [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                guard gen == self.generation else { return }
+                if let error { self.sessionEnded(device: device, error: error); return }
+                Log.info("DLNA", "The TV accepted the stream; it usually starts playing within a few seconds")
+                self.monitorRenderer(renderer, transport: transport, device: device, gen: gen)
+            }
+        }
+    }
+
+    // The session ends when the TV stops playing (remote control) or never fetches the stream.
+    private func monitorRenderer(_ renderer: DLNARenderer, transport: HTTPStreamTransport, device: MiracastDevice, gen: Int) {
+        let started = Date()
+        var wasPlaying = false
+        var stoppedSince: Date?
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 3, repeating: 3)
+        t.setEventHandler { [weak self] in
+            guard let self, gen == self.generation else { return }
+            let viewers = transport.viewerCount
+            if viewers == 0, !transport.everConnected, Date().timeIntervalSince(started) > 25 {
+                self.sessionEnded(device: device, error: DLNAError.neverFetched)
+                return
+            }
+            renderer.transportState { state in
+                self.queue.async {
+                    guard gen == self.generation, let state else { return }
+                    if state == "PLAYING" || state == "TRANSITIONING" { wasPlaying = true; stoppedSince = nil; return }
+                    guard wasPlaying || transport.everConnected else { return }
+                    let since = stoppedSince ?? Date()
+                    stoppedSince = since
+                    if (state == "STOPPED" || state == "NO_MEDIA_PRESENT") && Date().timeIntervalSince(since) > 4 {
+                        Log.info("DLNA", "The TV stopped playing")
+                        self.sessionEnded(device: device, error: nil)
+                    }
+                }
+            }
+        }
+        t.resume()
+        dlna = (renderer, t)
+    }
+
+    enum DLNAError: LocalizedError {
+        case notARenderer(String)
+        case noRoute(String)
+        case neverFetched
+
+        var errorDescription: String? {
+            switch self {
+            case .notARenderer(let ip): return "Nothing at \(ip) answered as a Miracast adapter (port 7250), Google Cast device (8009) or DLNA TV. Check the address and that the device is on and on this network."
+            case .noRoute(let ip): return "No network route to \(ip)"
+            case .neverFetched: return "The TV accepted the stream but never started fetching it. Some TVs only play files from DLNA, not live streams; check that the Mac's firewall allows incoming connections for Mira."
+            }
+        }
+    }
+
     // MARK: - Google Cast
 
     private func startCastSession(_ device: MiracastDevice, gen: Int) {
@@ -506,6 +634,11 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         pipeline?.stop(); pipeline = nil
         cast?.onClosed = nil
         cast?.stop(); cast = nil
+        if let d = dlna {
+            d.monitor.cancel()
+            d.renderer.stop()
+            dlna = nil
+        }
         uibc?.stop(); uibc = nil
         session?.onClosed = nil
         session?.teardown(); session = nil

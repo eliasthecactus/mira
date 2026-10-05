@@ -62,6 +62,17 @@ jobs:
           MIRA_ARGS="--test-pattern --remote-input" E2E_EXPECT_LOG="Received 3 input events" E2E_OUT="$RUNNER_TEMP/e2e-uibc" \
             E2E_DURATION=5 tools/e2e.sh $T --uibc
 
+      - name: End-to-end Google Cast and DLNA against mock receivers
+        run: |
+          T=--timing-tolerance-ms=150
+          E2E_OUT="$RUNNER_TEMP/cast"      E2E_DURATION=6 tools/e2e_cast.sh $T
+          E2E_OUT="$RUNNER_TEMP/cast-loss" E2E_DURATION=6 tools/e2e_cast.sh $T --loss 8
+          E2E_OUT="$RUNNER_TEMP/cast-pli"  E2E_DURATION=6 tools/e2e_cast.sh $T --pli-at 3
+          E2E_OUT="$RUNNER_TEMP/cast-stop" E2E_STOP_AFTER=5 E2E_DURATION=0 E2E_TIMEOUT=25 \
+            tools/e2e_cast.sh $T --expect-stop --timeout 25
+          E2E_OUT="$RUNNER_TEMP/dlna" E2E_DLNA_DIRECT=1 E2E_DURATION=6 E2E_EXPECT_LOG="The TV stopped playing" \
+            tools/e2e_dlna.sh
+
       - name: Package (ad-hoc signed)
         run: scripts/package.sh
 

@@ -408,7 +408,7 @@ final class DeviceListViewController: NSViewController {
         statusLabel.stringValue = "Checking \(ip)..."
         DeviceProbe.kind(of: ip) { [weak self] kind in
             DispatchQueue.main.async {
-                self?.onMirrorRequested?(MiracastDevice(name: ip, ipAddress: ip, kind: kind ?? .miracast))
+                self?.onMirrorRequested?(MiracastDevice(name: ip, ipAddress: ip, kind: kind ?? .dlna))
             }
         }
     }

@@ -23,6 +23,12 @@ protocol MediaTransport: AnyObject {
     func stop()
 
     var counters: TransportCounters { get }
+    // Whether a keyframe request means the receiver lost data (lowers the bitrate).
+    var keyframeRequestsSignalLoss: Bool { get }
+}
+
+extension MediaTransport {
+    var keyframeRequestsSignalLoss: Bool { true }
 }
 
 struct TransportCounters {

@@ -40,7 +40,8 @@ enum CLI {
       --keep-mac-audio        Don't mute the Mac's speakers while mirroring
       --delay <ms>            Sink buffer / latency (default: 200 AAC, 150 LPCM, 120 video-only)
       --name <text>           Name shown on the TV (default: this Mac's name)
-      --cast / --miracast     Protocol when connecting by IP (default: detected)
+      --cast / --miracast / --dlna   Protocol when connecting by IP (default: detected)
+      --dlna-url <url>        The TV's UPnP description URL (skips SSDP discovery)
       --port <n>              Sink's MICE port (default 7250)
       --rtsp-port <n>         Local RTSP port the sink connects to (default 7236)
       --rtp-port <n>          Local UDP source port for RTP (default 19000)
@@ -149,9 +150,19 @@ enum CLI {
             }
             browser.start()
         }
-        print("Scanning for Miracast (\(DeviceBrowser.serviceType)) and Google Cast (\(DeviceBrowser.castServiceType)) displays for \(Int(timeout))s...")
+        let ssdp = SSDPDiscovery()
+        ssdp.onFound = { d, _ in
+            DispatchQueue.main.async {
+                guard !found.contains(where: { $0.serviceName == d.serviceName }) else { return }
+                found.append(d)
+                print("  \(d.name)\tDLNA\t\(d.ipAddress)\t\(d.model ?? "")")
+            }
+        }
+        ssdp.start()
+        print("Scanning for Miracast, Google Cast and DLNA displays for \(Int(timeout))s...")
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
             browsers.forEach { $0.stop() }
+            ssdp.stop()
             if found.isEmpty {
                 print("""
                 No displays found. Check that:
@@ -179,6 +190,7 @@ enum CLI {
         var target: String?
         var micePort: UInt16?
         var forcedKind: MiracastDevice.Kind?
+        var dlnaURL: URL?
         var i = 0
 
         func value(_ name: String) throws -> String {
@@ -275,6 +287,13 @@ enum CLI {
             case "--port": micePort = try number(a)
             case "--cast": forcedKind = .googleCast
             case "--miracast": forcedKind = .miracast
+            case "--dlna": forcedKind = .dlna
+            case "--dlna-url":
+                guard let u = URL(string: try value(a)), u.host != nil else {
+                    throw ParseError(description: "--dlna-url takes the TV's UPnP description URL, e.g. http://192.168.1.20:9197/dmr")
+                }
+                dlnaURL = u
+                forcedKind = .dlna
             case "--rtsp-port": opts.rtspPort = try number(a)
             case "--rtp-port": opts.localRTPPort = try number(a)
             case "--dump-ts": opts.dumpTS = URL(fileURLWithPath: try value(a))
@@ -351,7 +370,8 @@ enum CLI {
 
         if isIPAddress(target) {
             let connect = { (kind: MiracastDevice.Kind) in
-                controller.connect(to: MiracastDevice(name: target, ipAddress: target, port: micePort, kind: kind))
+                controller.connect(to: MiracastDevice(name: target, ipAddress: target, port: micePort, kind: kind,
+                                                      location: kind == .dlna ? dlnaURL : nil))
             }
             if let kind = forcedKind ?? (micePort != nil ? .miracast : nil) {
                 connect(kind)
@@ -360,8 +380,8 @@ enum CLI {
                 DeviceProbe.kind(of: target) { kind in
                     DispatchQueue.main.async {
                         if let kind { Log.info("Mira", "\(target) is a \(kind.label) device") }
-                        else { Log.info("Mira", "\(target) did not answer on 8009 or 7250; trying Miracast") }
-                        connect(kind ?? .miracast)
+                        else { Log.info("Mira", "\(target) did not answer as Google Cast (8009) or Miracast (7250); trying DLNA") }
+                        connect(kind ?? .dlna)
                     }
                 }
             }

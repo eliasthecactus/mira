@@ -1,6 +1,10 @@
 # Mira
 
-Screen mirroring from macOS to Miracast receivers - specifically the **Microsoft 4K Wireless Display Adapter** - over your normal Wi-Fi network, using Microsoft's *Miracast over Infrastructure* protocol ([MS-MICE]).
+Screen mirroring from macOS to TVs and display adapters over your normal Wi-Fi network:
+
+- **Miracast over Infrastructure** ([MS-MICE]): the **Microsoft 4K Wireless Display Adapter**, Windows PCs, Surface Hub
+- **Google Cast**: **Chromecast**, **Google TV**, and TVs with *Chromecast built-in* (Sony, Philips, TCL, Hisense, ...), using the same real-time mirroring protocol as Chrome's "Cast screen"
+- **DLNA** (experimental): the built-in media player of most smart TVs (Samsung, LG, ...), with a few seconds of delay
 
 ```
 Mac --TCP 7250--> adapter      SOURCE_READY  ("I'm ready, connect to my port 7236")
@@ -10,11 +14,23 @@ Mac --UDP RTP---> adapter      MPEG-2 TS: H.264 Constrained Baseline + AAC/LPCM
 
 > **Built with AI:** Claude Opus 5.5 (Anthropic) was used heavily to build this project: protocol research, code, tests and documentation.
 
-> **Status:** the full pipeline works against a local mock sink, and the stream decodes cleanly in ffmpeg. It has **not been tested against a real adapter yet**. See [Testing with a real adapter](#testing-with-a-real-adapter).
+> **Status:** every protocol works end to end against local mock receivers (Miracast, Google Cast, DLNA), and the streams decode cleanly in ffmpeg. **None of it has been tested against real hardware yet.** See [Testing with a real adapter](#testing-with-a-real-adapter).
 
 ---
 
-## Which adapter?
+## Which display?
+
+| Display | Protocol | Works with Mira? |
+|---|---|---|
+| **Microsoft 4K Wireless Display Adapter**, Windows PC, Surface Hub | Miracast over Wi-Fi | **Yes** (details below), lowest delay (~150-200 ms) |
+| **Chromecast** (incl. with Google TV, 4K, Ultra), **Google TV / Android TV**, TVs with **Chromecast built-in** | Google Cast | **Yes**, ~250 ms delay, up to 4K with HEVC where the device supports it |
+| **Samsung** (2018+), **LG** (2019+), Sony, Vizio, ... with **AirPlay 2** | AirPlay | Use macOS's own **Screen Mirroring** (Control Center); it's built in and better than anything Mira could do |
+| Other smart TVs (older Samsung and LG, Philips, Panasonic, ...) | DLNA | **Experimental:** the TV plays Mira's stream in its media player, with 2-5 s of delay. Fine for presentations and video, not for typing. Not every TV plays live streams |
+| The "Screen Mirroring" / "Screen Share" menu of Samsung and LG TVs, Fire TV, Roku | Miracast over Wi-Fi Direct | **No.** That needs a direct Wi-Fi link that macOS doesn't offer to apps |
+
+Mira finds all of them on its own (`mira list` or the menu). To connect by IP, Mira checks which protocol the device speaks.
+
+### Which Miracast adapter?
 
 | Adapter | Works with Mira? |
 |---|---|
@@ -136,6 +152,21 @@ It is **off by default**: anyone at the TV can then use your Mac. Turn on *Allow
 
 Whether a display offers input at all depends on the display: the Microsoft 4K adapter probably doesn't (it has no input ports). The log says "The display does not offer input back to the Mac" in that case.
 
+### Google Cast (Chromecast, Google TV)
+
+Mira speaks Cast Streaming, the protocol Chrome uses for "Cast screen": it starts the TV's built-in mirroring receiver and sends an encrypted real-time stream (AES-128 per frame) that the TV acknowledges frame by frame; lost packets are resent. Video is H.264, or HEVC for 4K on devices that support it (Chromecast with Google TV 4K, Google TV Streamer); audio is Opus. Delay is about 250 ms (150 ms with *Low latency*; `--delay <ms>` sets it).
+
+Nothing to set up: the Chromecast appears in Mira's list like any other display. Mira stops the mirroring app on the TV when you stop, and the session ends if someone stops it on the TV. Input back from the TV isn't available with Cast.
+
+### Smart TVs over DLNA (experimental)
+
+Most smart TVs have a DLNA media player that can play a video stream from the network. Mira serves your screen as a live MPEG-TS stream over HTTP and asks the TV to play it. That works with TVs that can't do anything better, but the TV buffers: expect **2-5 seconds of delay**. Good for slides and videos, not for typing or games.
+
+- Samsung TVs from 2018 and LG TVs from 2019 on usually also support **AirPlay 2**: use macOS's Screen Mirroring instead (Control Center), it's faster.
+- The TV must be allowed to fetch from the Mac: the macOS firewall must let Mira accept incoming connections (`mira doctor`).
+- If the TV isn't found (some networks block the SSDP discovery), connect with its description URL: `mira connect <ip> --dlna-url http://<ip>:<port>/<path>.xml` (shown by UPnP tools like `upnp-inspector`, or in your router).
+- Not every TV plays live streams. If the TV shows an error or nothing at all, it's that.
+
 ### Security
 
 [MS-MICE] lets the *sender* choose how a session is protected. A display that follows the spec must accept a plain connection, so that's what Mira tries first:
@@ -177,6 +208,8 @@ mira connect <ip>                                          # 5. real screen + au
 mira connect <ip> --resolution 4k --probe-wfd2 --verbose   # 6. 4K / HEVC, logs everything the adapter offers
 mira connect <ip> --remote-input                           # 7. only if the display offers input back
 ```
+
+For a **Chromecast** or **Google TV**, the same steps work (Mira detects the protocol): `mira connect <ip> --cast --test-pattern --verbose`, then `mira connect <ip> --cast`, then `--resolution 4k` on a 4K model. For a **DLNA TV**: `mira connect <ip> --dlna --test-pattern --verbose`. The log shows every message exchanged.
 
 What success looks like at step 3:
 
@@ -241,27 +274,40 @@ python3 -m venv .venv && .venv/bin/pip install pyopenssl cryptography
 MIRA_ARGS="--test-pattern --security pin --pin 12345678" tools/e2e.sh --security pin --pin 12345678
 ```
 
+Google Cast and DLNA have their own mock receivers and end-to-end scripts:
+
+```bash
+tools/e2e_cast.sh                                      # mock Chromecast: TLS control, OFFER/ANSWER, encrypted RTP, ACK/NACK
+tools/e2e_cast.sh --loss 8                             # drops 8 % of packets; checks they are all resent
+tools/e2e_cast.sh --pli-at 3 --video-codecs hevc,h264  # picture loss -> key frame; HEVC
+tools/e2e_dlna.sh                                      # mock smart TV: SSDP, SOAP, live HTTP MPEG-TS, TV stops playback
+.venv/bin/python tools/mock_cast.py --advertise "Fake Chromecast"   # shows up in Mira's list
+```
+
 The mock sink is written from the same specs as Mira, so it can't catch a shared misreading of them. ffmpeg's independent decode check and the real adapter cover that.
 
 ## How it works
 
 | Layer | File | Notes |
 |---|---|---|
-| Discovery | `Discovery/DeviceBrowser.swift` | DNS-SD `_display._tcp` with TXT `container_id`, resolved per interface (works with a VPN connected) |
+| Discovery | `Discovery/DeviceBrowser.swift`, `DLNA/SSDPDiscovery.swift` | DNS-SD `_display._tcp` (Miracast, TXT `container_id`) and `_googlecast._tcp` (TXT `fn`, `md`, `ca`), resolved per interface (works with a VPN connected); SSDP for DLNA renderers |
+| Google Cast | `Cast/CastChannel.swift`, `CastSession.swift`, `CastOffer.swift` | TLS to port 8009, Cast v2 protobuf framing, heartbeat; LAUNCH of the mirroring receiver `0F5096E8`, OFFER/ANSWER (as Chrome sends it) |
+| Cast Streaming | `Cast/CastStreamSender.swift`, `CastTransport.swift` | Cast RTP (frame and packet IDs), AES-128-CTR per frame, RTCP sender reports, ACK/NACK retransmission, kickstart, picture-loss key frames ([openscreen] is the reference) |
+| DLNA | `DLNA/DLNARenderer.swift`, `HTTPStreamTransport.swift` | UPnP AVTransport (SetAVTransportURI, Play, Stop, GetTransportInfo), live MPEG-TS over HTTP with DLNA streaming headers; viewers start at a key frame |
 | MICE | `Session/MICEMessage.swift`, `MICEClient.swift` | SOURCE_READY / STOP_PROJECTION, SESSION_REQUEST / PIN challenge; friendly name is UTF-16LE with BOM, as Windows and GNOME send it |
 | Security | `Session/DTLSTunnel.swift` | Network.framework DTLS 1.2 client behind a loopback relay, so its records can travel inside MICE messages and RTP |
 | RTSP/WFD | `Session/WFDSession.swift`, `WFDNegotiation.swift` | Mac is the RTSP server; M1-M8, M15, M16 keep-alive every 25 s, IDR requests, PAUSE/PLAY. Formats from `wfd_video_formats` (Miracast 1), `wfd2_video_formats` (Miracast 2: H.264 + HEVC, 4K) and Microsoft's `wfdx_video_formats`; each has its own 4K table numbering. Falls back to simpler requests if a display rejects one |
 | Capture | `Capture/ScreenCapturer.swift` | ScreenCaptureKit video + system audio, letterboxed to 16:9 |
 | Video | `Encoder/VideoEncoder.swift`, `H264Bitstream.swift`, `HEVCBitstream.swift` | VideoToolbox H.264 (Constrained Baseline / Constrained High, CAVLC as WFD requires) or HEVC Main, no B-frames, IDR every 2 s or on request, AUD + parameter sets per keyframe |
 | Input | `Input/UIBCServer.swift`, `UIBCProtocol.swift`, `HIDDescriptor.swift`, `UIBCTranslator.swift`, `InputInjector.swift` | UIBC TCP server, generic and HID input (HID report descriptor parser), mapped back through the capture's letterbox and posted as macOS events |
-| Audio | `Encoder/AACEncoder.swift`, `LPCMEncoder.swift` | AAC-LC 48 kHz stereo 128 kbit/s (ADTS), or WFD LPCM 16-bit big-endian |
+| Audio | `Encoder/CompressedAudioEncoder.swift`, `LPCMEncoder.swift` | AAC-LC 48 kHz stereo 128 kbit/s (ADTS, or raw for Cast), Opus (Cast), or WFD LPCM 16-bit big-endian |
 | Mux | `Mux/MPEGTSMuxer.swift` | WFD PIDs (PMT 0x100, video 0x1011, audio 0x1100), stream type 0x1B (H.264) or 0x24 (HEVC), PCR on video, PAT/PMT every 100 ms |
 | Transport | `RTP/RTPMP2TPacketizer.swift`, `RTPSender.swift` | RTP payload type 33, 7 TS packets per datagram |
 | Quality | `RTP/BitrateController.swift`, `RTCPSender.swift` | AIMD bitrate from RTCP receiver reports, send backlog and repeated keyframe requests |
 | System | `Util/SystemIntegration.swift`, `CVirtualDisplay/` | sleep prevention, speaker mute, virtual display, global shortcut |
-| Timing | `MediaPipeline.swift` | constant-rate frame pump (re-sends the last frame on a static screen), PTS = capture + buffer, PCR backstop on audio |
+| Pipeline | `MediaPipeline.swift`, `MediaTransport.swift`, `WFDTransport.swift` | capture and encoding shared by all protocols; a constant-rate frame pump (re-sends the last frame on a static screen); each protocol is a transport (Miracast: PTS = capture + buffer, PCR backstop on audio) |
 
-References: [MS-MICE], [MS-WFDPE] (Microsoft's Wi-Fi Display extensions), the Miracast (Wi-Fi Display) specification v2.3, Android's open-source Wi-Fi Display source (LPCM layout), ISO/IEC 13818-1 (MPEG-TS), RFC 2250 (MPEG-TS over RTP), and [GNOME Network Displays], an open-source MICE source that was invaluable for byte-level details.
+References: [MS-MICE], [MS-WFDPE] (Microsoft's Wi-Fi Display extensions), the Miracast (Wi-Fi Display) specification v2.3, Android's open-source Wi-Fi Display source (LPCM layout), ISO/IEC 13818-1 (MPEG-TS), RFC 2250 (MPEG-TS over RTP), [openscreen] (Google's open-source Cast implementation and its streaming protocol document), the UPnP AVTransport and DLNA guidelines, and [GNOME Network Displays], an open-source MICE source that was invaluable for byte-level details.
 
 ## Releasing
 
@@ -276,12 +322,16 @@ References: [MS-MICE], [MS-WFDPE] (Microsoft's Wi-Fi Display extensions), the Mi
 ## Not implemented
 
 - **HDCP**, and it can't be. HDCP 2.x over Miracast needs a device key set and a certificate signed by Digital Content Protection LLC, plus the secret `lc128` constant, all of which are only issued to licensed companies, together with robustness rules that require hardware key protection. No open-source Miracast implementation has it. It also wouldn't help: HDCP only matters for DRM-protected video (Netflix and the like), and macOS never lets screen capture see that content anyway. Everything else mirrors normally, and the spec explicitly allows a source to stream without HDCP. Mira logs it when a display offers HDCP and carries on.
+- **Miracast over Wi-Fi Direct** (the "Screen Mirroring" menu of Samsung/LG TVs, Fire TV, Roku, the older Microsoft adapter): the Mac would have to open a direct Wi-Fi link to the TV, and macOS gives apps no way to do that.
+- **Sending to AirPlay receivers**: macOS does that itself, and the protocol needs Apple's device authentication.
+- Input back from Google Cast receivers (a draft in openscreen, not used by current devices).
 - Miracast 2 extras that don't apply to screen mirroring: direct streaming of video files without re-encoding, 10-bit and 4:4:4 HEVC, TCP transport, auxiliary streams.
 - Notarized builds out of the box. Supported by the release workflow once Developer ID secrets are added.
 
 [MS-MICE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mice/940d808c-97f8-418e-a8a9-c471dc0d21bb
 [GNOME Network Displays]: https://gitlab.gnome.org/GNOME/gnome-network-displays
 [MS-WFDPE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wfdpe/
+[openscreen]: https://chromium.googlesource.com/openscreen/
 
 ## License
 

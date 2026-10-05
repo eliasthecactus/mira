@@ -119,7 +119,10 @@ final class MediaPipeline: @unchecked Sendable {
             guard let self else { return }
             self.controlQueue.async { self.bitrate.report(.loss(fraction: fraction)) }
         }
-        transport.onKeyframeRequest = { [weak self] in self?.sinkRequestedKeyframe() }
+        let lossy = transport.keyframeRequestsSignalLoss
+        transport.onKeyframeRequest = { [weak self] in
+            if lossy { self?.sinkRequestedKeyframe() } else { self?.encoder.forceKeyframe() }
+        }
         bitrate.onChange = { [weak self] bps in self?.encoder.setBitrate(bps) }
 
         let hevc = f.isHEVC

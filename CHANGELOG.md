@@ -2,6 +2,18 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.6]
+
+### Added
+- **Google Cast:** mirror to Chromecast, Google TV / Android TV and TVs with Chromecast built-in. Mira speaks Cast Streaming, the protocol Chrome uses for "Cast screen": TLS control channel, the TV's built-in mirroring receiver, encrypted real-time RTP (AES-128 per frame) with acknowledgements and retransmission of lost packets, key frames on request. H.264, or HEVC for 4K where supported; Opus audio. About 250 ms of delay.
+- **DLNA (experimental):** smart TVs without Cast or Miracast over Wi-Fi (older Samsung, LG, Philips, ...) play Mira's live MPEG-TS stream in their media player, with 2-5 s of delay. `--dlna-url` for networks that block discovery.
+- Discovery finds Miracast, Google Cast and DLNA displays; connecting by IP detects the protocol (`--cast`, `--miracast`, `--dlna` to choose).
+- `tools/mock_cast.py` / `tools/e2e_cast.sh` and `tools/mock_dlna.py` / `tools/e2e_dlna.sh`; CI runs both.
+
+### Changed
+- The media pipeline is shared by all protocols; each protocol is a transport. The AAC encoder can also produce Opus.
+- Stopping mirroring on the TV ends the session normally instead of reporting an error.
+
 ## [0.2.0-beta.5]
 
 ### Added
