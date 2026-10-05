@@ -24,7 +24,8 @@ swift build >/dev/null || { echo "build failed"; exit 1; }
 $PY tools/mock_cast.py --duration "$DURATION" --timeout "${E2E_TIMEOUT:-$((DURATION + 40))}" \
     --out "$OUT/received.video" "$@" > "$OUT/receiver.log" 2>&1 &
 RECV=$!
-sleep 1.5
+# Wait until the mock receiver listens (Python can start slowly on a fresh CI machine).
+for _ in $(seq 1 60); do nc -z 127.0.0.1 8009 2>/dev/null && break; sleep 0.5; done
 
 "$MIRA" connect 127.0.0.1 --cast $MIRA_ARGS --no-reconnect > "$OUT/mira.log" 2>&1 &
 MIRA_PID=$!

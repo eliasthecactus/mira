@@ -17,10 +17,12 @@ MIRA_ARGS="${MIRA_ARGS---test-pattern}"
 
 swift build >/dev/null || { echo "build failed"; exit 1; }
 
-python3 tools/mock_dlna.py --duration "$DURATION" --timeout "${E2E_TIMEOUT:-$((DURATION + 40))}" \
+PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python
+$PY tools/mock_dlna.py --duration "$DURATION" --timeout "${E2E_TIMEOUT:-$((DURATION + 40))}" \
     --out "$OUT/received.ts" "$@" > "$OUT/tv.log" 2>&1 &
 TV=$!
-sleep 1
+# Wait until the mock TV answers (Python can start slowly on a fresh CI machine).
+for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:49152/description.xml && break; sleep 0.5; done
 
 DIRECT=""; [ -n "${E2E_DLNA_DIRECT:-}" ] && DIRECT="--dlna-url http://127.0.0.1:49152/description.xml"
 "$MIRA" connect 127.0.0.1 --dlna $DIRECT $MIRA_ARGS --no-reconnect > "$OUT/mira.log" 2>&1 &
