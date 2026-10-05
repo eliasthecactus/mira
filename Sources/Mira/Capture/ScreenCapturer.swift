@@ -93,7 +93,7 @@ final class ScreenCapturer: NSObject, VideoSource, AudioSource {
         cfg.showsCursor = true
         cfg.queueDepth = 6
         cfg.capturesAudio = config.captureAudio
-        cfg.sampleRate = Int(AACEncoder.sampleRate)
+        cfg.sampleRate = Int(CompressedAudioEncoder.sampleRate)
         cfg.channelCount = 2
         cfg.excludesCurrentProcessAudio = true
 

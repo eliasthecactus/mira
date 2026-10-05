@@ -107,7 +107,7 @@ final class TestPatternSource: VideoSource, AudioSource {
     }
 
     private func emitAudio() {
-        let rate = AACEncoder.sampleRate
+        let rate = CompressedAudioEncoder.sampleRate
         let now = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
         let target = Int((now - audioStartHost) * rate)
         let count = target - audioFramesSent

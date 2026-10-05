@@ -6,7 +6,7 @@ protocol AudioEncoding: AnyObject, Sendable {
     func encode(interleaved samples: [Float], pts: Double)
 }
 
-extension AACEncoder: AudioEncoding {}
+extension CompressedAudioEncoder: AudioEncoding {}
 
 // Wi-Fi Display LPCM: the one audio format every WFD sink must support. No encoder
 // delay, ~1.5 Mbit/s. Each PES carries a 4-byte header and 6 "audio frames" of 80

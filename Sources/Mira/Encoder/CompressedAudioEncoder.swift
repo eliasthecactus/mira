@@ -1,44 +1,80 @@
 import Foundation
 import AudioToolbox
 
-// PCM (interleaved Float32, 48 kHz stereo) -> AAC-LC frames wrapped in ADTS, which is
-// how AAC is carried in MPEG-TS (stream_type 0x0F). WFD's AAC mode bit 0 is exactly
-// this format, and it's the only AAC mode sinks must support.
-final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.audioQueue
+// PCM (interleaved Float32, 48 kHz stereo) -> compressed audio frames:
+//   .aac:  AAC-LC wrapped in ADTS, how AAC is carried in MPEG-TS (stream_type 0x0F).
+//          WFD's AAC mode bit 0 is exactly this format.
+//   .opus: raw Opus packets of 20 ms, the one audio codec every Cast receiver supports.
+final class CompressedAudioEncoder: @unchecked Sendable {   // used only from MediaPipeline.audioQueue
+
+    enum Codec: String { case aac = "AAC", opus = "Opus" }
 
     static let sampleRate = 48_000.0
     static let channels: UInt32 = 2
-    static let framesPerPacket = 1024
-    static let primingFrames = 2112            // Apple AAC encoder delay
 
-    // (ADTS frame, presentation time in host-clock seconds)
-    var onEncoded: ((_ adts: Data, _ pts: Double) -> Void)?
+    let codec: Codec
+    let framesPerPacket: Int
+    private(set) var primingFrames: Int         // encoder delay (AAC 2112, Opus ~312)
+
+    // (frame, presentation time in host-clock seconds)
+    var onEncoded: ((_ frame: Data, _ pts: Double) -> Void)?
 
     private var converter: AudioConverterRef?
     private var fifo: [Float] = []             // interleaved L R L R ...
     private var timelineStart: Double?         // host time of the first frame fed
     private var framesQueued = 0               // frames ever appended to the fifo
     private var packetsOut = 0
-    private let feed = UnsafeMutablePointer<Float>.allocate(capacity: framesPerPacket * 2)
+    private let feed: UnsafeMutablePointer<Float>
     private var feedFramesAvailable = 0
     private var maxOutputPacketSize: UInt32 = 1536
     private static let noDataStatus: OSStatus = 0x6E6F6474  // 'nodt'
 
-    init(bitrate: UInt32 = 128_000) throws {
-        var input = AudioStreamBasicDescription(
-            mSampleRate: Self.sampleRate, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
-            mChannelsPerFrame: Self.channels, mBitsPerChannel: 32, mReserved: 0)
-        var output = AudioStreamBasicDescription(
-            mSampleRate: Self.sampleRate, mFormatID: kAudioFormatMPEG4AAC,
-            mFormatFlags: AudioFormatFlags(MPEG4ObjectID.AAC_LC.rawValue),
-            mBytesPerPacket: 0, mFramesPerPacket: UInt32(Self.framesPerPacket), mBytesPerFrame: 0,
-            mChannelsPerFrame: Self.channels, mBitsPerChannel: 0, mReserved: 0)
+    static let pcmFormat = AudioStreamBasicDescription(
+        mSampleRate: sampleRate, mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
+        mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0)
+
+    static func compressedFormat(_ codec: Codec) -> AudioStreamBasicDescription {
+        switch codec {
+        case .aac:
+            return AudioStreamBasicDescription(
+                mSampleRate: sampleRate, mFormatID: kAudioFormatMPEG4AAC,
+                mFormatFlags: AudioFormatFlags(MPEG4ObjectID.AAC_LC.rawValue),
+                mBytesPerPacket: 0, mFramesPerPacket: 1024, mBytesPerFrame: 0,
+                mChannelsPerFrame: channels, mBitsPerChannel: 0, mReserved: 0)
+        case .opus:
+            return AudioStreamBasicDescription(
+                mSampleRate: sampleRate, mFormatID: kAudioFormatOpus, mFormatFlags: 0,
+                mBytesPerPacket: 0, mFramesPerPacket: 960, mBytesPerFrame: 0,
+                mChannelsPerFrame: channels, mBitsPerChannel: 0, mReserved: 0)
+        }
+    }
+
+    // Whether this Mac can encode Opus (AudioToolbox).
+    static let opusAvailable: Bool = {
+        var input = pcmFormat
+        var output = compressedFormat(.opus)
+        var conv: AudioConverterRef?
+        let ok = AudioConverterNew(&input, &output, &conv) == noErr && conv != nil
+        if let conv { AudioConverterDispose(conv) }
+        return ok
+    }()
+
+    init(codec: Codec = .aac, bitrate: UInt32 = 128_000) throws {
+        self.codec = codec
+        var input = Self.pcmFormat
+        var output = Self.compressedFormat(codec)
+        framesPerPacket = Int(output.mFramesPerPacket)
+        feed = UnsafeMutablePointer<Float>.allocate(capacity: framesPerPacket * 2)
+        primingFrames = codec == .aac ? 2112 : 0
 
         var conv: AudioConverterRef?
         let status = AudioConverterNew(&input, &output, &conv)
-        guard status == noErr, let conv else { throw EncoderError.converterCreationFailed(status) }
+        guard status == noErr, let conv else {
+            feed.deallocate()
+            throw EncoderError.converterCreationFailed(status)
+        }
         converter = conv
 
         var br = bitrate
@@ -48,7 +84,14 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
         if AudioConverterGetProperty(conv, kAudioConverterPropertyMaximumOutputPacketSize, &size, &maxSize) == noErr, maxSize > 0 {
             maxOutputPacketSize = maxSize
         }
-        Log.info("Audio", "AAC-LC encoder 48 kHz stereo \(bitrate / 1000) kbps")
+        if codec == .opus {
+            var prime = AudioConverterPrimeInfo()
+            var primeSize = UInt32(MemoryLayout<AudioConverterPrimeInfo>.size)
+            if AudioConverterGetProperty(conv, kAudioConverterPrimeInfo, &primeSize, &prime) == noErr {
+                primingFrames = Int(prime.leadingFrames)
+            }
+        }
+        Log.info("Audio", "\(codec == .aac ? "AAC-LC" : "Opus") encoder 48 kHz stereo \(bitrate / 1000) kbps")
     }
 
     deinit {
@@ -95,14 +138,14 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
         let outBuf = UnsafeMutableRawPointer.allocate(byteCount: Int(maxOutputPacketSize), alignment: 16)
         defer { outBuf.deallocate() }
 
-        while fifo.count >= Self.framesPerPacket * 2 {
+        while fifo.count >= framesPerPacket * 2 {
             fifo.withUnsafeBufferPointer { src in
-                feed.update(from: src.baseAddress!, count: Self.framesPerPacket * 2)
+                feed.update(from: src.baseAddress!, count: framesPerPacket * 2)
             }
-            fifo.removeFirst(Self.framesPerPacket * 2)
-            feedFramesAvailable = Self.framesPerPacket
+            fifo.removeFirst(framesPerPacket * 2)
+            feedFramesAvailable = framesPerPacket
 
-            // Pull output until this 1024-frame chunk is consumed.
+            // Pull output until this chunk is consumed.
             while true {
                 var packets: UInt32 = 1
                 var desc = AudioStreamPacketDescription()
@@ -110,7 +153,7 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
                     mNumberChannels: Self.channels, mDataByteSize: maxOutputPacketSize, mData: outBuf))
                 let status = AudioConverterFillComplexBuffer(
                     converter, { _, ioPackets, ioData, _, userData in
-                        let enc = Unmanaged<AACEncoder>.fromOpaque(userData!).takeUnretainedValue()
+                        let enc = Unmanaged<CompressedAudioEncoder>.fromOpaque(userData!).takeUnretainedValue()
                         return enc.provideInput(ioPackets, ioData)
                     },
                     Unmanaged.passUnretained(self).toOpaque(), &packets, &list, &desc)
@@ -121,11 +164,12 @@ final class AACEncoder: @unchecked Sendable {   // used only from MediaPipeline.
                     packetsOut += 1
                     // The first packets only carry encoder priming; skip them so every
                     // emitted frame has a non-negative timestamp on our timeline.
-                    if index * Self.framesPerPacket >= Self.primingFrames - Self.framesPerPacket {
-                        var adts = Data(Self.adtsHeader(payloadLength: size))
-                        adts.append(Data(bytes: outBuf, count: size))
-                        let pts = start + Double(index * Self.framesPerPacket - Self.primingFrames) / Self.sampleRate
-                        onEncoded?(adts, pts)
+                    if (index + 1) * framesPerPacket > primingFrames {
+                        var frame = Data()
+                        if codec == .aac { frame.append(contentsOf: Self.adtsHeader(payloadLength: size)) }
+                        frame.append(Data(bytes: outBuf, count: size))
+                        let pts = start + Double(index * framesPerPacket - primingFrames) / Self.sampleRate
+                        onEncoded?(frame, pts)
                     }
                 }
                 if status != noErr && status != Self.noDataStatus {

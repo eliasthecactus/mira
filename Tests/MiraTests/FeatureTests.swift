@@ -77,8 +77,7 @@ final class SharingAndPrivacyTests: XCTestCase {
     }
 
     func testBlackFrameIsOpaqueBlack() throws {
-        let r = WFDResolution.cea(width: 1280, height: 720, fps: 30)!
-        let pb = try XCTUnwrap(MediaPipeline.blackFrame(r))
+        let pb = try XCTUnwrap(MediaPipeline.blackFrame(width: 1280, height: 720))
         XCTAssertEqual(CVPixelBufferGetWidth(pb), 1280)
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }

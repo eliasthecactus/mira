@@ -329,18 +329,21 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
             Log.info("Mira", "Capping the bitrate at \(limit / 1_000_000) Mbit/s (HEVC level limit)")
             maxBitrate = limit
         }
-        let cfg = MediaPipeline.Config(format: format, sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort,
-                                       localRTPPort: options.localRTPPort, bitrate: maxBitrate,
-                                       fps: format.resolution.fps, testPattern: options.testPattern,
+        let stream = StreamFormat(format)
+        let transport = WFDTransport(config: .init(
+            sinkIP: sinkIP, rtpPort: rtpPort, rtcpPort: rtcpPort, localRTPPort: options.localRTPPort,
+            audio: WFDTransport.audioFormat(stream.audio), hevc: stream.isHEVC,
+            ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio, lowLatency: options.lowLatency),
+            dumpTS: options.dumpTS,
+            tunnel: currentSecurity == .none ? nil : mice?.tunnel))
+        let cfg = MediaPipeline.Config(format: stream, transport: transport, bitrate: maxBitrate,
+                                       testPattern: options.testPattern,
                                        displayID: options.displayID,
-                                       dumpTS: options.dumpTS,
-                                       ptsDelay: options.ptsDelay ?? Self.defaultDelay(format.audio, lowLatency: options.lowLatency),
                                        adaptiveBitrate: options.adaptiveBitrate,
                                        extendedDisplayID: extended?.displayID,
                                        muteMac: options.muteMac,
                                        lowLatency: options.lowLatency,
-                                       target: options.target,
-                                       tunnel: currentSecurity == .none ? nil : mice?.tunnel)
+                                       target: options.target)
         let p = MediaPipeline(config: cfg)
         p.onFatalError = { [weak self] err in
             guard let self else { return }

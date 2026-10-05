@@ -123,7 +123,7 @@ final class MPEGTSMuxerTests: XCTestCase {
 
     func testAudioPESIsBounded() {
         let mux = MPEGTSMuxer(audio: .aac)
-        let adts = Data(AACEncoder.adtsHeader(payloadLength: 300)) + Data(repeating: 0x11, count: 300)
+        let adts = Data(CompressedAudioEncoder.adtsHeader(payloadLength: 300)) + Data(repeating: 0x11, count: 300)
         let d = demux(mux.muxAudio(adts, pts90k: 1234, pcr27M: 0))
         let pes = [UInt8](d.pes[MPEGTSMuxer.audioPID]![0])
         XCTAssertEqual(Array(pes[0..<4]), [0, 0, 1, 0xC0])
@@ -135,7 +135,7 @@ final class MPEGTSMuxerTests: XCTestCase {
 extension MPEGTSMuxerTests {
     func testAudioInsertsPCROnlyPacketWhenVideoStalls() {
         let mux = MPEGTSMuxer(audio: .aac)
-        let adts = Data(AACEncoder.adtsHeader(payloadLength: 10)) + Data(repeating: 0, count: 10)
+        let adts = Data(CompressedAudioEncoder.adtsHeader(payloadLength: 10)) + Data(repeating: 0, count: 10)
         var packets = mux.muxVideo(accessUnit: Data([1, 2, 3]), pts90k: 0, pcr27M: 27_000_000, isKeyframe: true)
         let soon = mux.muxAudio(adts, pts90k: 0, pcr27M: 27_000_000 + 27_000 * 20)    // +20 ms
         let late = mux.muxAudio(adts, pts90k: 0, pcr27M: 27_000_000 + 27_000 * 50)    // +50 ms
@@ -202,7 +202,7 @@ final class BitstreamTests: XCTestCase {
     }
 
     func testADTSHeader() {
-        let h = AACEncoder.adtsHeader(payloadLength: 371)
+        let h = CompressedAudioEncoder.adtsHeader(payloadLength: 371)
         XCTAssertEqual(h.count, 7)
         XCTAssertEqual(h[0], 0xFF)
         XCTAssertEqual(h[1], 0xF1)
@@ -215,7 +215,7 @@ final class BitstreamTests: XCTestCase {
     }
 
     func testAACEncoderProducesTimedADTSFrames() throws {
-        let enc = try AACEncoder()
+        let enc = try CompressedAudioEncoder(codec: .aac)
         var frames: [(Data, Double)] = []
         enc.onEncoded = { frames.append(($0, $1)) }
         let block = [Float](repeating: 0.1, count: 480 * 2)
