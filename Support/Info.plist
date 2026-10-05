@@ -27,7 +27,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>MiraVersion</key>
-	<string>0.2.0-beta.3</string>
+	<string>0.2.0-beta.4</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_display._tcp</string>
