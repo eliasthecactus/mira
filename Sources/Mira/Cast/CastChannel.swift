@@ -11,12 +11,14 @@ final class CastChannel: @unchecked Sendable {   // all state on `queue`
 
     enum ChannelError: LocalizedError {
         case connectFailed(String)
+        case refused                // nothing listening, or a gateway that blocks this device
         case closed(String)
         case timeout
 
         var errorDescription: String? {
             switch self {
             case .connectFailed(let why): return "Could not connect to the Cast device: \(why)"
+            case .refused: return "The Cast device refused the connection"
             case .closed(let why): return "Cast connection closed: \(why)"
             case .timeout: return "The Cast device stopped answering"
             }
@@ -65,8 +67,12 @@ final class CastChannel: @unchecked Sendable {   // all state on `queue`
                 self.receive()
                 ready()
             case .failed(let err):
-                self.finish(ChannelError.connectFailed("\(err)"))
+                self.finish(Self.isRefused(err) ? ChannelError.refused : ChannelError.connectFailed("\(err)"))
             case .waiting(let err):
+                if Self.isRefused(err) {
+                    self.finish(ChannelError.refused)
+                    return
+                }
                 Log.warn("Cast", "Waiting to connect: \(err)")
                 self.queue.asyncAfter(deadline: .now() + 6) { [weak self] in
                     if case .waiting = conn.state { self?.finish(ChannelError.connectFailed("\(err)")) }
@@ -76,6 +82,11 @@ final class CastChannel: @unchecked Sendable {   // all state on `queue`
             }
         }
         conn.start(queue: queue)
+    }
+
+    static func isRefused(_ err: NWError) -> Bool {
+        if case .posix(let code) = err, code == .ECONNREFUSED { return true }
+        return false
     }
 
     func send(_ message: CastMessage) {

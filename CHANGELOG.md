@@ -2,6 +2,16 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.7]
+
+### Added
+- **Hotel and venue TVs:** casting systems that only let paired devices connect are recognised (a Cast TV on an unusual port that refuses the connection). Mira asks for the code shown on the TV, the link from its QR code, or scans the QR code with the Mac's camera or an iPhone (Continuity Camera). It pairs on its own where it can (opens the link, or finds and fills in the pairing form) and hands over to the browser where a person is needed, then connects as soon as the TV accepts the Mac. *Pair TV* in the menu; `--pair <code|link>` in the CLI. Pairing codes are kept out of the log.
+- **AirPlay TVs** (Samsung, LG, Sony, Apple TV, ...) appear in the list with a *How?* button explaining macOS Screen Mirroring, instead of not appearing at all.
+- `tools/mock_gateway.py` and `tools/e2e_pairing.sh` (link, form, consent pages); CI runs them.
+
+### Changed
+- First real-hardware result: Google Cast mirroring worked on a hotel TV.
+
 ## [0.2.0-beta.6]
 
 ### Added

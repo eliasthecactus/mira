@@ -72,6 +72,7 @@ jobs:
             tools/e2e_cast.sh $T --expect-stop --timeout 25
           E2E_OUT="$RUNNER_TEMP/dlna" E2E_DLNA_DIRECT=1 E2E_DURATION=6 E2E_EXPECT_LOG="The TV stopped playing" \
             tools/e2e_dlna.sh
+          for MODE in link form consent consent-user; do E2E_OUT="$RUNNER_TEMP/pair-$MODE" tools/e2e_pairing.sh $MODE; done
 
       - name: Package (ad-hoc signed)
         run: scripts/package.sh

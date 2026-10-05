@@ -9,12 +9,13 @@ struct MiracastDevice: CustomStringConvertible, Equatable {
         case miracast
         case googleCast = "cast"
         case dlna
+        case airplay        // shown with a hint: macOS mirrors to these itself
 
         var defaultPort: UInt16 {
             switch self {
             case .miracast: return MiracastDevice.defaultMICEPort
             case .googleCast: return CastChannel.defaultPort
-            case .dlna: return 0
+            case .dlna, .airplay: return 0
             }
         }
         var label: String {
@@ -22,6 +23,7 @@ struct MiracastDevice: CustomStringConvertible, Equatable {
             case .miracast: return "Miracast"
             case .googleCast: return "Google Cast"
             case .dlna: return "DLNA"
+            case .airplay: return "AirPlay"
             }
         }
     }

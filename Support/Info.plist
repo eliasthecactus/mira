@@ -32,9 +32,12 @@
 	<array>
 		<string>_display._tcp</string>
 		<string>_googlecast._tcp</string>
+		<string>_airplay._tcp</string>
 	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Mira reads the pairing QR code that hotel and venue TVs show, so it can connect to them. Nothing is recorded.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Mira finds Miracast displays on your network and streams your screen to them.</string>
 </dict>

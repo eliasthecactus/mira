@@ -14,7 +14,7 @@ Mac --UDP RTP---> adapter      MPEG-2 TS: H.264 Constrained Baseline + AAC/LPCM
 
 > **Built with AI:** Claude Opus 5.5 (Anthropic) was used heavily to build this project: protocol research, code, tests and documentation.
 
-> **Status:** every protocol works end to end against local mock receivers (Miracast, Google Cast, DLNA), and the streams decode cleanly in ffmpeg. **None of it has been tested against real hardware yet.** See [Testing with a real adapter](#testing-with-a-real-adapter).
+> **Status:** every protocol works end to end against local mock receivers (Miracast, Google Cast, DLNA), and the streams decode cleanly in ffmpeg. Google Cast has also worked on a real hotel TV; Miracast and DLNA are **not tested on real hardware yet**. See [Testing with a real adapter](#testing-with-a-real-adapter).
 
 ---
 
@@ -24,7 +24,8 @@ Mac --UDP RTP---> adapter      MPEG-2 TS: H.264 Constrained Baseline + AAC/LPCM
 |---|---|---|
 | **Microsoft 4K Wireless Display Adapter**, Windows PC, Surface Hub | Miracast over Wi-Fi | **Yes** (details below), lowest delay (~150-200 ms) |
 | **Chromecast** (incl. with Google TV, 4K, Ultra), **Google TV / Android TV**, TVs with **Chromecast built-in** | Google Cast | **Yes**, ~250 ms delay, up to 4K with HEVC where the device supports it |
-| **Samsung** (2018+), **LG** (2019+), Sony, Vizio, ... with **AirPlay 2** | AirPlay | Use macOS's own **Screen Mirroring** (Control Center); it's built in and better than anything Mira could do |
+| **Samsung** (2018+), **LG** (2019+), Sony, Vizio, ... with **AirPlay 2**, Apple TV | AirPlay | Use macOS's own **Screen Mirroring** (Control Center); it's built in and better than anything Mira could do. Mira lists these TVs with a *How?* button that explains it |
+| **Hotel and venue TVs** ("scan the code to cast") | Google Cast behind a gateway | **Yes**, after pairing the Mac with the room, see [Hotel and venue TVs](#hotel-and-venue-tvs) |
 | Other smart TVs (older Samsung and LG, Philips, Panasonic, ...) | DLNA | **Experimental:** the TV plays Mira's stream in its media player, with 2-5 s of delay. Fine for presentations and video, not for typing. Not every TV plays live streams |
 | The "Screen Mirroring" / "Screen Share" menu of Samsung and LG TVs, Fire TV, Roku | Miracast over Wi-Fi Direct | **No.** That needs a direct Wi-Fi link that macOS doesn't offer to apps |
 
@@ -158,6 +159,17 @@ Mira speaks Cast Streaming, the protocol Chrome uses for "Cast screen": it start
 
 Nothing to set up: the Chromecast appears in Mira's list like any other display. Mira stops the mirroring app on the TV when you stop, and the session ends if someone stops it on the TV. Input back from the TV isn't available with Cast.
 
+### Hotel and venue TVs
+
+Many hotels put their TVs behind a casting system: the TV shows a code or a QR code, and only devices that "paired" with it may cast. The link in the QR code (like `http://172.20.0.8/pair?pairCode=7F6GY`) has to be opened **on the Mac**; opening it on your phone pairs the phone. Mira does this for you:
+
+- When a TV refuses the connection because the Mac isn't paired, Mira asks for the code right away. You can also click **Pair TV** in the menu.
+- Type the **code** shown on the TV, paste the **link**, or click **Scan QR Code...** and hold the camera (or your iPhone as a Continuity Camera, which reads codes across a room much better) toward the TV.
+- Mira opens the link itself, or finds the pairing form on the system's web page and fills in the code. If the page wants a person (accepting terms, a button), Mira opens it in your browser; finish it there, and Mira connects by itself as soon as the TV lets the Mac in.
+- CLI: `mira connect <ip> --cast --port <port> --pair <code or link>` (`mira list` shows the address and port, marked as a hotel casting system).
+
+Tested for real in a hotel (pairing by hand, then mirroring); the automatic pairing is tested against a mock hotel system with link, form and consent pages.
+
 ### Smart TVs over DLNA (experimental)
 
 Most smart TVs have a DLNA media player that can play a video stream from the network. Mira serves your screen as a live MPEG-TS stream over HTTP and asks the TV to play it. That works with TVs that can't do anything better, but the TV buffers: expect **2-5 seconds of delay**. Good for slides and videos, not for typing or games.
@@ -281,6 +293,7 @@ tools/e2e_cast.sh                                      # mock Chromecast: TLS co
 tools/e2e_cast.sh --loss 8                             # drops 8 % of packets; checks they are all resent
 tools/e2e_cast.sh --pli-at 3 --video-codecs hevc,h264  # picture loss -> key frame; HEVC
 tools/e2e_dlna.sh                                      # mock smart TV: SSDP, SOAP, live HTTP MPEG-TS, TV stops playback
+tools/e2e_pairing.sh form                              # mock hotel casting system: pair (link, form, consent, consent-user), then cast
 .venv/bin/python tools/mock_cast.py --advertise "Fake Chromecast"   # shows up in Mira's list
 ```
 
@@ -293,6 +306,7 @@ The mock sink is written from the same specs as Mira, so it can't catch a shared
 | Discovery | `Discovery/DeviceBrowser.swift`, `DLNA/SSDPDiscovery.swift` | DNS-SD `_display._tcp` (Miracast, TXT `container_id`) and `_googlecast._tcp` (TXT `fn`, `md`, `ca`), resolved per interface (works with a VPN connected); SSDP for DLNA renderers |
 | Google Cast | `Cast/CastChannel.swift`, `CastSession.swift`, `CastOffer.swift` | TLS to port 8009, Cast v2 protobuf framing, heartbeat; LAUNCH of the mirroring receiver `0F5096E8`, OFFER/ANSWER (as Chrome sends it) |
 | Cast Streaming | `Cast/CastStreamSender.swift`, `CastTransport.swift` | Cast RTP (frame and packet IDs), AES-128-CTR per frame, RTCP sender reports, ACK/NACK retransmission, kickstart, picture-loss key frames ([openscreen] is the reference) |
+| Hotel pairing | `Cast/CastPairing.swift`, `UI/QRScannerWindow.swift` | detects gateways (Cast on a port other than 8009 that refuses), pairs with a link or a code (HTML form discovery, known link patterns, browser hand-off), reads QR codes with AVFoundation + Vision |
 | DLNA | `DLNA/DLNARenderer.swift`, `HTTPStreamTransport.swift` | UPnP AVTransport (SetAVTransportURI, Play, Stop, GetTransportInfo), live MPEG-TS over HTTP with DLNA streaming headers; viewers start at a key frame |
 | MICE | `Session/MICEMessage.swift`, `MICEClient.swift` | SOURCE_READY / STOP_PROJECTION, SESSION_REQUEST / PIN challenge; friendly name is UTF-16LE with BOM, as Windows and GNOME send it |
 | Security | `Session/DTLSTunnel.swift` | Network.framework DTLS 1.2 client behind a loopback relay, so its records can travel inside MICE messages and RTP |

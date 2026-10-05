@@ -24,6 +24,8 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("CoreAudio"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("Vision"),
                 // Embed Info.plist so the bare executable has a bundle ID and the
                 // Local Network / Bonjour usage strings (macOS 15+ local network privacy).
                 .unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",

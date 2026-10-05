@@ -42,7 +42,8 @@ enum CLI {
       --name <text>           Name shown on the TV (default: this Mac's name)
       --cast / --miracast / --dlna   Protocol when connecting by IP (default: detected)
       --dlna-url <url>        The TV's UPnP description URL (skips SSDP discovery)
-      --port <n>              Sink's MICE port (default 7250)
+      --port <n>              Device port (Miracast 7250, Cast 8009, or the port a hotel gateway uses)
+      --pair <code|link>      Pair with a hotel/venue TV first (the code or QR-code link it shows)
       --rtsp-port <n>         Local RTSP port the sink connects to (default 7236)
       --rtp-port <n>          Local UDP source port for RTP (default 19000)
       --dump-ts <file.ts>     Also save the exact MPEG-TS stream sent (play with ffplay)
@@ -137,7 +138,7 @@ enum CLI {
             if args[i] == "--timeout", i + 1 < args.count, let t = TimeInterval(args[i + 1]) { timeout = t; i += 2 }
             else { throw ParseError(description: "Unknown option \(args[i])") }
         }
-        let browsers = [DeviceBrowser(kind: .miracast), DeviceBrowser(kind: .googleCast)]
+        let browsers = [DeviceBrowser(kind: .miracast), DeviceBrowser(kind: .googleCast), DeviceBrowser(kind: .airplay)]
         var found: [MiracastDevice] = []
         for browser in browsers {
             browser.onDeviceFound = { d in
@@ -145,7 +146,12 @@ enum CLI {
                     guard !found.contains(where: { $0.kind == d.kind && $0.serviceName == d.serviceName }) else { return }
                     found.append(d)
                     let extra = d.containerID.map { "\tcontainer_id=\($0)" } ?? d.model.map { "\t\($0)" } ?? ""
-                    print("  \(d.name)\t\(d.kind.label)\t\(d.ipAddress):\(d.port)\(extra)")
+                    if d.kind == .airplay {
+                        print("  \(d.name)\tAirPlay - use macOS Screen Mirroring (Control Center)\t\(d.ipAddress)\(extra)")
+                    } else {
+                        let hotel = CastPairing.isBehindGateway(d) ? "\t(hotel casting system: may need --pair <code>)" : ""
+                        print("  \(d.name)\t\(d.kind.label)\t\(d.ipAddress):\(d.port)\(extra)\(hotel)")
+                    }
                 }
             }
             browser.start()
@@ -159,7 +165,7 @@ enum CLI {
             }
         }
         ssdp.start()
-        print("Scanning for Miracast, Google Cast and DLNA displays for \(Int(timeout))s...")
+        print("Scanning for Miracast, Google Cast, DLNA and AirPlay displays for \(Int(timeout))s...")
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
             browsers.forEach { $0.stop() }
             ssdp.stop()
@@ -170,6 +176,8 @@ enum CLI {
                     or a Chromecast / Google TV / TV with Chromecast built-in,
                   - it is on this Wi-Fi network (the Microsoft adapter needs the Microsoft Wireless Display Adapter app once),
                   - this Mac is on the same network/VLAN (guest networks often block device-to-device traffic).
+                In a hotel: the TV usually shows a code or QR code to pair your device first; hotel casting
+                systems may only show the TV after that. `mira connect <ip> --cast --port <port> --pair <code>`.
                 Tip: `dns-sd -B _display._tcp` / `dns-sd -B _googlecast._tcp` show raw mDNS results. You can also connect by IP.
                 """)
             }
@@ -191,6 +199,7 @@ enum CLI {
         var micePort: UInt16?
         var forcedKind: MiracastDevice.Kind?
         var dlnaURL: URL?
+        var pairText: String?
         var i = 0
 
         func value(_ name: String) throws -> String {
@@ -288,6 +297,11 @@ enum CLI {
             case "--cast": forcedKind = .googleCast
             case "--miracast": forcedKind = .miracast
             case "--dlna": forcedKind = .dlna
+            case "--pair":
+                pairText = try value(a)
+                guard CastPairing.parse(pairText!) != nil else {
+                    throw ParseError(description: "--pair takes the code shown on the TV (like 7F6GY) or the link from its QR code")
+                }
             case "--dlna-url":
                 guard let u = URL(string: try value(a)), u.host != nil else {
                     throw ParseError(description: "--dlna-url takes the TV's UPnP description URL, e.g. http://192.168.1.20:9197/dmr")
@@ -368,11 +382,45 @@ enum CLI {
         statsTimer = t
         _ = statsTimer
 
+        // --pair: unlock a hotel/venue casting gateway for this Mac before connecting.
+        let start = { (device: MiracastDevice) in
+            guard let pairText, let input = CastPairing.parse(pairText), device.kind == .googleCast else {
+                controller.connect(to: device)
+                return
+            }
+            let pairing = CastPairing(gatewayHost: device.ipAddress, devicePort: device.port)
+            pairing.openInBrowser = { url in
+                Log.info("Cast", "Finish the pairing in the browser page that just opened")
+                let p = Process()
+                // MIRA_OPEN_COMMAND replaces `open` (tests use /usr/bin/true).
+                p.executableURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MIRA_OPEN_COMMAND"] ?? "/usr/bin/open")
+                p.arguments = [url.absoluteString]
+                try? p.run()
+            }
+            pairing.progress = { Log.info("Cast", $0) }
+            let wait = ProcessInfo.processInfo.environment["MIRA_PAIR_WAIT"].flatMap(TimeInterval.init) ?? 120
+            pairing.pair(input, waitAfterBrowser: wait) { result in
+                DispatchQueue.main.async {
+                    _ = pairing
+                    switch result {
+                    case .success:
+                        Log.info("Cast", "Paired; connecting")
+                        controller.connect(to: device)
+                    case .failure(let error):
+                        Log.error("Cast", error.localizedDescription)
+                        Log.flush()
+                        exit(1)
+                    }
+                }
+            }
+        }
+
         if isIPAddress(target) {
             let connect = { (kind: MiracastDevice.Kind) in
-                controller.connect(to: MiracastDevice(name: target, ipAddress: target, port: micePort, kind: kind,
-                                                      location: kind == .dlna ? dlnaURL : nil))
+                start(MiracastDevice(name: target, ipAddress: target, port: micePort, kind: kind,
+                                     location: kind == .dlna ? dlnaURL : nil))
             }
+            if pairText != nil, forcedKind == nil { forcedKind = .googleCast }
             if let kind = forcedKind ?? (micePort != nil ? .miracast : nil) {
                 connect(kind)
             } else {
@@ -392,7 +440,7 @@ enum CLI {
                 guard !done, let d = devices.first(where: { $0.name.localizedCaseInsensitiveContains(target) }) else { return }
                 done = true
                 controller.stopDiscovery()
-                controller.connect(to: d)
+                start(d)
             }
             controller.startDiscovery()
             DispatchQueue.main.asyncAfter(deadline: .now() + 15) {

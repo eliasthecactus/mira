@@ -7,6 +7,7 @@ final class DeviceListViewController: NSViewController {
     var onMirrorRequested: ((MiracastDevice) -> Void)?
     var onStopRequested: (() -> Void)?
     var onPrivacyToggle: (() -> Void)?
+    var onPairRequested: (() -> Void)?
     var onTargetChange: ((CaptureTarget) -> Void)?
 
     private var devices: [MiracastDevice] = []
@@ -188,10 +189,12 @@ final class DeviceListViewController: NSViewController {
         diagButton.toolTip = "Save a zip with the log and system/network info for a bug report"
         let helpButton = Self.linkButton("Help", self, #selector(openHelp))
         let quitButton = Self.linkButton("Quit", self, #selector(quit))
+        let pairButton = Self.linkButton("Pair TV", self, #selector(pairTapped))
+        pairButton.toolTip = "Hotel or venue TV that asks you to scan a code? Pair this Mac with it (code, link or QR code)"
         let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.toggleMirroring.display) start/stop - \(GlobalHotKey.togglePrivacy.display) pause")
         shortcut.font = .systemFont(ofSize: 10)
         shortcut.textColor = .tertiaryLabelColor
-        let footer = NSStackView(views: [logButton, diagButton, helpButton, NSView(), quitButton])
+        let footer = NSStackView(views: [pairButton, logButton, diagButton, helpButton, NSView(), quitButton])
         let shortcutRow = NSStackView(views: [shortcut])
 
         let stack = NSStackView(views: [titleRow, statusLabel, scrollView, controlRow, ipRow,
@@ -386,6 +389,14 @@ final class DeviceListViewController: NSViewController {
 
     @objc private func stopTapped() { onStopRequested?() }
 
+    @objc private func pairTapped() { onPairRequested?() }
+
+    // A transient line in the status area (e.g. pairing progress).
+    func showMessage(_ text: String) {
+        statusLabel.stringValue = text
+        resizeToFit()
+    }
+
     @objc private func privacyTapped() { onPrivacyToggle?() }
 
     func setPrivacy(_ on: Bool) {
@@ -533,7 +544,7 @@ extension DeviceListViewController: NSTableViewDataSource, NSTableViewDelegate {
 
         let btn = NSButton(frame: NSRect(x: w - 80, y: 8, width: 76, height: 24))
         btn.autoresizingMask = [.minXMargin]
-        btn.title = isActive ? "Active" : "Mirror"
+        btn.title = isActive ? "Active" : (device.kind == .airplay ? "How?" : "Mirror")
         btn.bezelStyle = .rounded
         btn.controlSize = .small
         btn.isEnabled = !isActive

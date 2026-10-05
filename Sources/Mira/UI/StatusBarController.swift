@@ -24,6 +24,15 @@ final class StatusBarController: NSObject {
         set { listVC.onTargetChange = newValue }
     }
 
+    var onPairRequested: (() -> Void)? {
+        get { listVC.onPairRequested }
+        set { listVC.onPairRequested = newValue }
+    }
+
+    func showMessage(_ text: String) {
+        listVC.showMessage(text)
+    }
+
     var onPrivacyToggle: (() -> Void)? {
         get { listVC.onPrivacyToggle }
         set { listVC.onPrivacyToggle = newValue }

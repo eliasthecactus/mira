@@ -19,9 +19,17 @@ import dnssd
 final class DeviceBrowser: @unchecked Sendable {   // all state confined to `queue`
     static let serviceType = "_display._tcp"
     static let castServiceType = "_googlecast._tcp"
+    static let airplayServiceType = "_airplay._tcp"
 
     let kind: MiracastDevice.Kind
-    var serviceType: String { kind == .miracast ? Self.serviceType : Self.castServiceType }
+    var serviceType: String {
+        switch kind {
+        case .miracast: return Self.serviceType
+        case .googleCast: return Self.castServiceType
+        case .airplay: return Self.airplayServiceType
+        case .dlna: return ""
+        }
+    }
 
     init(kind: MiracastDevice.Kind = .miracast) {
         self.kind = kind
@@ -45,6 +53,7 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
         var friendlyName: String?
         var model: String?
         var capabilities: Int?
+        var features: String?
         var done = false
 
         init(name: String, interfaceIndex: UInt32, browser: DeviceBrowser) {
@@ -128,7 +137,8 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
             r.port = UInt16(bigEndian: port)
             r.containerID = DeviceBrowser.txtValue("container_id", txtLen, txt)
             r.friendlyName = DeviceBrowser.txtValue("fn", txtLen, txt)
-            r.model = DeviceBrowser.txtValue("md", txtLen, txt)
+            r.model = DeviceBrowser.txtValue("md", txtLen, txt) ?? DeviceBrowser.txtValue("model", txtLen, txt)
+            r.features = DeviceBrowser.txtValue("features", txtLen, txt)
             r.capabilities = DeviceBrowser.txtValue("ca", txtLen, txt).flatMap { Int($0) }
             me.lookupAddress(r, host: String(cString: host!))
         }, ctx)
@@ -168,6 +178,11 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
                 me.finish(r, error: nil)
                 return
             }
+            if me.kind == .airplay, !DeviceBrowser.isAirPlayDisplay(model: r.model, features: r.features) {
+                Log.debug("Discovery", "Ignoring \(r.name): AirPlay device without a screen (\(r.model ?? "?"))")
+                me.finish(r, error: nil)
+                return
+            }
             let device = MiracastDevice(name: r.friendlyName ?? r.name, ipAddress: String(cString: buf), port: r.port,
                                         containerID: r.containerID, kind: me.kind, model: r.model, serviceName: r.name)
             Log.info("Discovery", "Found \(device)\(r.containerID.map { " container_id=\($0)" } ?? "")\(r.model.map { " model=\($0)" } ?? "")")
@@ -198,6 +213,20 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
         var name = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
         guard if_indextoname(index, &name) != nil else { return false }
         return String(cString: name).hasPrefix("lo")
+    }
+
+    // AirPlay receivers worth listing: TVs and Apple TVs. Macs, iPhones, iPads, HomePods,
+    // AirPort and other speakers are left out (features bit 0 = video, bit 7 = screen).
+    static func isAirPlayDisplay(model: String?, features: String?) -> Bool {
+        let m = (model ?? "").lowercased()
+        for skip in ["mac", "imac", "iphone", "ipad", "ipod", "audioaccessory", "airport", "homepod"] where m.hasPrefix(skip) {
+            return false
+        }
+        guard let features else { return true }
+        let low = features.split(separator: ",").first.map(String.init) ?? features
+        let hex = low.lowercased().hasPrefix("0x") ? String(low.dropFirst(2)) : low
+        guard let bits = UInt64(hex, radix: 16) else { return true }
+        return bits & 0x01 != 0 || bits & 0x80 != 0
     }
 
     private static func txtValue(_ key: String, _ len: UInt16, _ txt: UnsafePointer<UInt8>?) -> String? {

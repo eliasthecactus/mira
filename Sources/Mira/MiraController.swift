@@ -67,6 +67,8 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
 
     var onDevicesChanged: (([MiracastDevice]) -> Void)?
     var onStatusChanged: ((Status) -> Void)?
+    // A Cast TV behind a hotel/venue gateway refused us: the Mac has to be paired first.
+    var onPairingNeeded: ((MiracastDevice) -> Void)?
     // Asks the user for the PIN shown on the TV (called on an arbitrary queue).
     var pinProvider: ((@escaping (String?) -> Void) -> Void)?
 
@@ -74,7 +76,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     private(set) var status: Status = .idle { didSet { if status != oldValue { onStatusChanged?(status) } } }
 
     private let queue = DispatchQueue(label: "mira.control")
-    private let browsers = [DeviceBrowser(kind: .miracast), DeviceBrowser(kind: .googleCast)]
+    private let browsers = [DeviceBrowser(kind: .miracast), DeviceBrowser(kind: .googleCast), DeviceBrowser(kind: .airplay)]
     private var devices: [MiracastDevice] = []
     private var mice: MICEClient?
     private var session: WFDSession?
@@ -142,7 +144,7 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
                 self.renderers[renderer.udn] = renderer
                 self.devices.removeAll { $0.kind == .dlna && $0.serviceName == device.serviceName }
                 // A TV that also speaks Google Cast or Miracast is better served that way.
-                guard !self.devices.contains(where: { $0.ipAddress == device.ipAddress }) else { return }
+                guard !self.devices.contains(where: { $0.ipAddress == device.ipAddress && [.miracast, .googleCast].contains($0.kind) }) else { return }
                 self.devices.append(device)
                 self.devices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 self.onDevicesChanged?(self.devices)
@@ -281,6 +283,10 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
     }
 
     private func startSession(_ device: MiracastDevice, security: MICESecurity, gen: Int) {
+        if device.kind == .airplay {
+            sessionEnded(device: device, error: MiraError.useAirPlay(device.name))
+            return
+        }
         if device.kind == .googleCast {
             startCastSession(device, gen: gen)
             return
@@ -559,6 +565,11 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
         }
         session.onClosed = { [weak self] error in
             guard let self, gen == self.generation else { return }
+            if case CastChannel.ChannelError.refused? = error, CastPairing.isBehindGateway(device) {
+                self.sessionEnded(device: device, error: MiraError.castGatewayNeedsPairing(device))
+                self.onPairingNeeded?(device)
+                return
+            }
             self.sessionEnded(device: device, error: error)
         }
         session.start()
@@ -655,11 +666,17 @@ final class MiraController: @unchecked Sendable {   // state is confined to `que
 
 enum MiraError: LocalizedError {
     case miceFailed(MiracastDevice, Error)
+    case castGatewayNeedsPairing(MiracastDevice)
+    case useAirPlay(String)
 
     var errorDescription: String? {
         switch self {
         case .miceFailed(let d, let e):
             return "Could not reach \(d.name) at \(d.ipAddress):\(d.port) (\(e)). Is the adapter joined to this Wi-Fi network and powered on? Is Mira allowed under System Settings -> Privacy & Security -> Local Network? (The original non-4K Microsoft adapter does not support Miracast over Wi-Fi at all.)"
+        case .castGatewayNeedsPairing(let d):
+            return "\(d.name) is behind the hotel's (or venue's) casting system, which only lets paired devices connect. Pair this Mac: enter the code shown on the TV, or scan the TV's QR code with Mira (or open its link on this Mac), then connect again."
+        case .useAirPlay(let name):
+            return "\(name) is an AirPlay display. macOS mirrors to it by itself: Control Center -> Screen Mirroring -> \(name)."
         }
     }
 }
