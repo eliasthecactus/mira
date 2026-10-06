@@ -1,14 +1,19 @@
 import Foundation
 
-// Looks for a newer GitHub release. No auto-install: the menu just links to it.
+// Looks for a newer GitHub release; the menu offers to install it (Updater).
 enum UpdateChecker {
 
     struct Release { let version: String; let url: URL }
 
-    static func check(completion: @escaping (Release?) -> Void) {
+    // nil = up to date; failure = couldn't ask GitHub (offline, rate limit...).
+    static func check(completion: @escaping (Result<Release?, Error>) -> Void) {
         Task {
-            let r = try? await Updater.latest()
-            completion(r.map { Release(version: $0.version, url: $0.page) })
+            do {
+                let r = try await Updater.latest()
+                completion(.success(r.map { Release(version: $0.version, url: $0.page) }))
+            } catch {
+                completion(.failure(error))
+            }
         }
     }
 

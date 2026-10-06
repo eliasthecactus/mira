@@ -40,6 +40,13 @@ final class StatusBarController: NSObject {
 
     private var streaming = false
     private var privacyOn = false
+    private var updateAvailable = false
+
+    var onPopoverOpened: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)? {
+        get { listVC.onCheckForUpdates }
+        set { listVC.onCheckForUpdates = newValue }
+    }
 
     func setPrivacy(_ on: Bool) {
         privacyOn = on
@@ -49,8 +56,9 @@ final class StatusBarController: NSObject {
 
     private func updateIcon() {
         let symbol = privacyOn ? "eye.slash" : (streaming ? "rectangle.fill.on.rectangle.fill" : "rectangle.on.rectangle")
-        statusItem.button?.image = NSImage(systemSymbolName: symbol,
-                                           accessibilityDescription: privacyOn ? "Mira (paused)" : streaming ? "Mira (mirroring)" : "Mira")
+        let description = privacyOn ? "Mira (paused)" : streaming ? "Mira (mirroring)" : updateAvailable ? "Mira (update available)" : "Mira"
+        guard let base = NSImage(systemSymbolName: symbol, accessibilityDescription: description) else { return }
+        statusItem.button?.image = updateAvailable ? Self.withDot(base) : base
     }
 
     override init() {
@@ -73,6 +81,7 @@ final class StatusBarController: NSObject {
     private func openPopover() {
         guard let button = statusItem.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        onPopoverOpened?()
         NSApp.activate(ignoringOtherApps: true)
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closePopover()
@@ -103,6 +112,30 @@ final class StatusBarController: NSObject {
 
     func setUpdate(_ release: UpdateChecker.Release?) {
         listVC.setUpdate(release)
+        updateAvailable = release != nil
+        updateIcon()
+    }
+
+    func showUpdateMessage(_ text: String) {
+        listVC.showMessage(text)
+    }
+
+    // The menu bar symbol with a small dot in the corner: "update available".
+    static func withDot(_ base: NSImage) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { rect in
+            // Drawn when shown, in the menu bar's appearance: tint the symbol like the
+            // menu bar text (light or dark), then add the dot.
+            let symbolRect = NSRect(x: 0, y: 1, width: 16, height: 16)
+            base.draw(in: symbolRect)
+            NSColor.labelColor.set()
+            symbolRect.fill(using: .sourceAtop)
+            NSColor.systemOrange.setFill()
+            NSBezierPath(ovalIn: NSRect(x: rect.maxX - 7, y: rect.maxY - 7, width: 7, height: 7)).fill()
+            return true
+        }
+        image.isTemplate = false      // keep the dot orange; the symbol follows the menu bar style
+        return image
     }
 
     func showPopover() {

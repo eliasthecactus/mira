@@ -8,6 +8,7 @@ final class DeviceListViewController: NSViewController {
     var onStopRequested: (() -> Void)?
     var onPrivacyToggle: (() -> Void)?
     var onPairRequested: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
     var onTargetChange: ((CaptureTarget) -> Void)?
 
     private var devices: [MiracastDevice] = []
@@ -178,8 +179,10 @@ final class DeviceListViewController: NSViewController {
         let row6 = NSStackView(views: [codecPopup, remoteInputCheckbox])
         row6.spacing = 10
 
-        updateButton.bezelStyle = .inline
-        updateButton.controlSize = .small
+        updateButton.bezelStyle = .rounded
+        updateButton.controlSize = .regular
+        updateButton.bezelColor = .systemOrange
+        updateButton.toolTip = "Downloads the new version from GitHub, verifies it, replaces Mira and restarts"
         updateButton.isHidden = true
         updateButton.target = self
         updateButton.action = #selector(openUpdate)
@@ -190,11 +193,13 @@ final class DeviceListViewController: NSViewController {
         let helpButton = Self.linkButton("Help", self, #selector(openHelp))
         let quitButton = Self.linkButton("Quit", self, #selector(quit))
         let pairButton = Self.linkButton("Pair TV", self, #selector(pairTapped))
+        let checkButton = Self.linkButton("Updates", self, #selector(checkUpdatesTapped))
+        checkButton.toolTip = "Check GitHub for a new version of Mira now"
         pairButton.toolTip = "Hotel or venue TV that asks you to scan a code? Pair this Mac with it (code, link or QR code)"
         let shortcut = NSTextField(labelWithString: "\(GlobalHotKey.toggleMirroring.display) start/stop - \(GlobalHotKey.togglePrivacy.display) pause")
         shortcut.font = .systemFont(ofSize: 10)
         shortcut.textColor = .tertiaryLabelColor
-        let footer = NSStackView(views: [pairButton, logButton, diagButton, helpButton, NSView(), quitButton])
+        let footer = NSStackView(views: [pairButton, checkButton, logButton, diagButton, helpButton, NSView(), quitButton])
         let shortcutRow = NSStackView(views: [shortcut])
 
         let stack = NSStackView(views: [titleRow, statusLabel, scrollView, controlRow, ipRow,
@@ -347,7 +352,7 @@ final class DeviceListViewController: NSViewController {
     func setUpdate(_ release: UpdateChecker.Release?) {
         update = release
         updateButton.isHidden = release == nil
-        if let release { updateButton.title = "Update available: Mira \(release.version)" }
+        if let release { updateButton.title = "Install update: Mira \(release.version)" }
         resizeToFit()
     }
 
@@ -390,6 +395,8 @@ final class DeviceListViewController: NSViewController {
     @objc private func stopTapped() { onStopRequested?() }
 
     @objc private func pairTapped() { onPairRequested?() }
+
+    @objc private func checkUpdatesTapped() { onCheckForUpdates?() }
 
     // A transient line in the status area (e.g. pairing progress).
     func showMessage(_ text: String) {

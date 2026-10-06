@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastGatewayDevice: MiracastDevice?     // last hotel-gateway TV the user tried
     private var scanner: QRScannerWindowController?
     private var pairing: CastPairing?
+    private var lastUpdateCheck = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.info("Mira", "Menu bar app \(AppInfo.version) (\(AppInfo.build)) started; log file \(Log.logFileURL.path)")
@@ -80,8 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.statusBar.showPopover() }
         }
 
+        // Updates: at launch, every 4 hours, and when the menu opens (at most every 30 min).
+        statusBar.onCheckForUpdates = { [weak self] in self?.checkForUpdates(manual: true) }
+        statusBar.onPopoverOpened = { [weak self] in
+            guard let self, Date().timeIntervalSince(self.lastUpdateCheck) > 30 * 60 else { return }
+            self.checkForUpdates()
+        }
         checkForUpdates()
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { [weak self] _ in
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
         }
     }
@@ -254,11 +261,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func checkForUpdates() {
-        UpdateChecker.check { [weak self] release in
+    private func checkForUpdates(manual: Bool = false) {
+        lastUpdateCheck = Date()
+        if manual { statusBar.showUpdateMessage("Checking for updates...") }
+        UpdateChecker.check { [weak self] result in
             DispatchQueue.main.async {
+                guard let self else { return }
+                let release: UpdateChecker.Release?
+                switch result {
+                case .failure(let error):
+                    Log.warn("Mira", "Update check failed: \(error.localizedDescription)")
+                    if manual { self.statusBar.showUpdateMessage("Couldn't check for updates (\(error.localizedDescription)).") }
+                    return
+                case .success(let r):
+                    release = r
+                }
                 if let release { Log.info("Mira", "Update available: \(release.version)") }
-                self?.statusBar.setUpdate(release)
+                self.statusBar.setUpdate(release)
+                if manual {
+                    self.statusBar.showUpdateMessage(release.map { "Mira \($0.version) is available - click Install update." }
+                                                     ?? "Mira \(AppInfo.version) is the newest version.")
+                }
             }
         }
     }

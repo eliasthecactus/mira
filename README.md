@@ -135,7 +135,7 @@ mira help                            # all options
 
 **Keyboard shortcuts:** Ctrl+Opt+Cmd+M starts mirroring to the last display, or stops it. Ctrl+Opt+Cmd+P **pauses the screen**: the TV keeps showing the last frame (or black, per setting), audio goes silent, and your Mac's screen is private, e.g. while typing a password. Press it again to resume. In the CLI, type `p` + Enter (`b` for black), or send `SIGUSR1`. While mirroring, the Mac doesn't go to sleep.
 
-**Updates:** Mira checks GitHub once a day. When a new version is out, the menu shows it, and *Install and Restart* downloads it, verifies its SHA-256 checksum and signature, replaces the app (the old one goes to the Trash) and restarts. CLI: `mira update` (`--check` to only look).
+**Updates:** Mira checks GitHub at launch, every 4 hours and when you open the menu (*Updates* checks right away). When a new version is out, the menu bar icon gets an orange dot and the menu shows *Install update*, which downloads it, verifies its SHA-256 checksum and signature, replaces the app (the old one goes to the Trash) and restarts. CLI: `mira update` (`--check` to only look).
 
 **Diagnostics:** *Diagnostics* in the menu (or `mira diagnose`) saves a zip to your Desktop with the log, `mira doctor` output, system, display and network info, settings and recent crash reports. Attach it to a GitHub issue. It contains IP addresses and device names from your network, so have a look first.
 

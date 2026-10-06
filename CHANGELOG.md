@@ -2,6 +2,11 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.10]
+
+### Changed
+- Updates are easier to notice and install from the menu: the menu bar icon gets an orange dot when a new version is available, the popover shows a prominent *Install update* button, Mira checks at launch, every 4 hours and when you open the menu, and *Updates* in the menu checks right away.
+
 ## [0.2.0-beta.9]
 
 ### Fixed
