@@ -2,6 +2,11 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.8]
+
+### Fixed
+- `mira update` said "this copy runs from a build folder" when `mira` was started through the `/usr/local/bin/mira` link to the app. Mira now follows the link to find the app it belongs to (also for "Open at login").
+
 ## [0.2.0-beta.7]
 
 ### Added

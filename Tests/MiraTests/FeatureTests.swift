@@ -22,6 +22,26 @@ final class EncoderProfileTests: XCTestCase {
     }
 }
 
+final class AppLocationTests: XCTestCase {
+    func testFindsTheAppAroundTheRealExecutable() {
+        XCTAssertEqual(AppInfo.containingApp(ofExecutable: URL(fileURLWithPath: "/Applications/Mira.app/Contents/MacOS/Mira"))?.path,
+                       "/Applications/Mira.app")
+        XCTAssertNil(AppInfo.containingApp(ofExecutable: URL(fileURLWithPath: "/usr/local/bin/mira")))
+        XCTAssertNil(AppInfo.containingApp(ofExecutable: URL(fileURLWithPath: "/Users/x/mira/.build/debug/Mira")))
+    }
+
+    func testResolvesASymlinkToTheApp() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mira-link-\(UUID().uuidString)")
+        let exe = dir.appendingPathComponent("Mira.app/Contents/MacOS/Mira")
+        try FileManager.default.createDirectory(at: exe.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: exe.path, contents: Data())
+        let link = dir.appendingPathComponent("mira")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: exe)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        XCTAssertEqual(AppInfo.containingApp(ofExecutable: link.resolvingSymlinksInPath())?.lastPathComponent, "Mira.app")
+    }
+}
+
 final class UpdaterTests: XCTestCase {
     func releases(_ items: [(String, Bool, Bool)]) -> Data {
         let list = items.map { tag, pre, draft -> [String: Any] in

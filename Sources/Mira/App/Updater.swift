@@ -41,10 +41,7 @@ enum Updater {
         }
     }
 
-    static var currentApp: URL? {
-        let url = Bundle.main.bundleURL.resolvingSymlinksInPath()
-        return url.pathExtension == "app" ? url : nil
-    }
+    static var currentApp: URL? { AppInfo.appBundleURL }
 
     // MARK: - Check
 
