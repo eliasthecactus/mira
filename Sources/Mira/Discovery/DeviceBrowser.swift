@@ -179,7 +179,7 @@ final class DeviceBrowser: @unchecked Sendable {   // all state confined to `que
                 return
             }
             if me.kind == .airplay, !DeviceBrowser.isAirPlayDisplay(model: r.model, features: r.features) {
-                Log.debug("Discovery", "Ignoring \(r.name): AirPlay device without a screen (\(r.model ?? "?"))")
+                Log.debug("Discovery", "Ignoring \(r.name): not a TV or Apple TV (\(r.model ?? "?"))")
                 me.finish(r, error: nil)
                 return
             }
