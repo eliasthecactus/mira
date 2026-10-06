@@ -14,6 +14,7 @@ final class QRScannerWindowController: NSWindowController, NSWindowDelegate, AVC
     private let previewLayer: AVCaptureVideoPreviewLayer
     private let cameraPopup = NSPopUpButton()
     private let hint = NSTextField(labelWithString: "Point the camera at the QR code on the TV")
+    private let settingsButton = NSButton(title: "Open Camera Settings", target: nil, action: nil)
     private var cameras: [AVCaptureDevice] = []
     private var delivered = false
     private var lastScan = Date.distantPast
@@ -61,7 +62,12 @@ final class QRScannerWindowController: NSWindowController, NSWindowDelegate, AVC
         note.font = .systemFont(ofSize: 10)
         note.textColor = .tertiaryLabelColor
 
-        let bar = NSStackView(views: [hint, NSView(), cameraPopup])
+        settingsButton.target = self
+        settingsButton.action = #selector(openCameraSettings)
+        settingsButton.controlSize = .small
+        settingsButton.bezelStyle = .rounded
+        settingsButton.isHidden = true
+        let bar = NSStackView(views: [hint, NSView(), settingsButton, cameraPopup])
         let stack = NSStackView(views: [preview, bar, note])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -98,8 +104,15 @@ final class QRScannerWindowController: NSWindowController, NSWindowDelegate, AVC
     }
 
     private func permissionDenied() {
-        hint.stringValue = "Camera access is off for Mira: System Settings -> Privacy & Security -> Camera"
+        hint.stringValue = "Camera access is off for Mira. Turn it on, then try again (or type the code instead)."
         hint.textColor = .systemOrange
+        settingsButton.isHidden = false
+        cameraPopup.isHidden = true
+        Log.warn("Cast", "Camera access denied (status \(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
+    }
+
+    @objc private func openCameraSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
     }
 
     private func setUpCameras() {
