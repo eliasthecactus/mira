@@ -54,6 +54,9 @@ SIGN_FLAGS=(--force --options runtime --entitlements entitlements.plist --sign "
 [ "$SIGN_ID" != "-" ] && SIGN_FLAGS+=(--timestamp)
 codesign "${SIGN_FLAGS[@]}" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
+# Hardened runtime blocks the camera silently unless the entitlement is there.
+codesign -d --entitlements - "$APP" 2>/dev/null | grep -q "com.apple.security.device.camera" \
+    || { echo "error: camera entitlement missing from the signature"; exit 1; }
 
 # -- Package --------------------------------------------------------------
 STAGE=$(mktemp -d)

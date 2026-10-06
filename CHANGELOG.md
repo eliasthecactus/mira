@@ -2,6 +2,11 @@
 
 All notable changes to Mira. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.2.0-beta.9]
+
+### Fixed
+- The QR scanner couldn't use the camera: the app's signature lacked the camera entitlement that the hardened runtime requires, so macOS blocked the camera without asking (and Mira never appeared under Privacy & Security -> Camera). Packaging now checks the entitlement is there.
+
 ## [0.2.0-beta.8]
 
 ### Fixed
